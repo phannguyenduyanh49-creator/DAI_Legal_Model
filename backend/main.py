@@ -4,11 +4,25 @@ from fastapi.responses import StreamingResponse
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from backend.catalog.service import CatalogService
+from backend.mcp.adapter import (
+    mcp_results_to_evidence
+)
+
+from backend.prompt.assembler import PromptAssembler
+
+from backend.catalog.schemas import CatalogQuery
+
+from backend.evidence.normalizer import (
+    procedure_to_evidence,
+    catalog_record_to_evidence,
+)
 
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import FlagReranker
-
+from backend.rag.adapter import rag_results_to_evidence
+from backend.evidence.builder import EvidenceBuilder
 import httpx
 import json
 import asyncio
@@ -21,6 +35,15 @@ import sqlite3
 from datetime import datetime, timezone
 
 
+catalog_service = CatalogService()
+evidence_builder = EvidenceBuilder(
+    min_score=0.3,
+    max_evidences=10,
+)
+
+prompt_assembler = PromptAssembler(
+    max_evidence_chars=12000
+)
 # =========================================================
 # APP
 # =========================================================
@@ -45,7 +68,7 @@ SESSION_COOKIE_SECURE = False  # True khi deploy HTTPS production
 # PROJECT BASE DIRECTORY
 # =========================================================
 
-BASE_DIR = r"D:\DAI-Legal-Model"
+BASE_DIR = r"D:\Prj\DAI-Legal-Model"
 
 
 # =========================================================
@@ -239,7 +262,8 @@ app.add_middleware(
 # CONFIG
 # =========================================================
 
-BASE_DIR = r"D:\DAI-Legal-Model"
+BASE_DIR = r"D:\Prj\DAI-Legal-Model"
+
 
 MCP_SERVER_PATH = os.path.join(
     BASE_DIR,
@@ -746,9 +770,7 @@ async def rerank_local_results(
         "documents"
     )
 
-    # -----------------------------------------------------
-    # CREATE QUERY-DOCUMENT PAIRS
-    # -----------------------------------------------------
+
 
     pairs = []
 
@@ -1126,10 +1148,14 @@ def check_enough_data(
 # =========================================================
 # LOCAL RAG
 # =========================================================
-
 async def search_local_rag(
-    question: str
+    question: str,
+    catalog_evidences: list | None = None,
 ):
+    if catalog_evidences is None:
+        catalog_evidences = []
+
+
 
     print(
         "\n=============================="
@@ -1457,6 +1483,20 @@ async def search_local_rag(
                     contexts
                 )
             )
+        # ============================================================
+        # EVIDENCE LAYER
+        # Direct Catalog + RAG + MCP → Evidence Builder
+        # ============================================================
+
+        rag_evidences = rag_results_to_evidence(
+            reranked_contexts
+        )
+
+
+
+
+
+
 
         # -------------------------------------------------
         # ENOUGH DATA CHECK
@@ -1467,13 +1507,53 @@ async def search_local_rag(
             reranked_contexts
         )
 
+        mcp_evidences = []
+
         if not enough_data:
+
             print(
                 "LOCAL RAG DOCUMENT CÓ NHƯNG "
                 "KHÔNG ĐỦ FIELD ĐỂ TRẢ LỜI"
             )
 
-            return []
+            print(
+                "→ GỌI MCP DỊCH VỤ CÔNG"
+            )
+
+            try:
+
+                mcp_result = await search_dichvucong(
+                    question
+                )
+
+                mcp_evidences = (
+                    mcp_result.get(
+                        "evidences",
+                        []
+                    )
+                )
+
+                print(
+                    "MCP EVIDENCES:",
+                    len(mcp_evidences)
+                )
+
+            except Exception as e:
+
+                print(
+                    "MCP ERROR:",
+                    repr(e)
+                )
+
+                mcp_evidences = []
+
+        # BUILD EVIDENCE BUNDLE AFTER COLLECTING EVIDENCE
+        evidence_bundle = evidence_builder.build(
+            catalog_evidences=catalog_evidences,
+            rag_evidences=rag_evidences,
+            mcp_evidences=mcp_evidences,
+            query=question,
+        )
 
         # -------------------------------------------------
         # FINAL LOCAL RAG RESULTS
@@ -1558,17 +1638,21 @@ async def search_local_rag(
                 "DỮ LIỆU ĐỦ LIÊN QUAN"
             )
 
-        return formatted_contexts
+        return {
+            "contexts": formatted_contexts,
+            "evidence_bundle": evidence_bundle,
+        }
 
     except Exception as e:
+        import traceback
+        print("LOCAL RAG ERROR TYPE:", type(e).__name__)
+        print("LOCAL RAG ERROR DETAIL:", repr(e))
+        traceback.print_exc()
 
-        print(
-            "LOCAL RAG ERROR:",
-            repr(e)
-        )
-
-        return []
-
+    return {
+        "contexts": [],
+        "evidence_bundle": None,
+    }
 
 # =========================================================
 # BOOLEAN PARSER
@@ -1696,6 +1780,34 @@ async def call_mcp_tool(
                 tool_name
             )
 
+            mcp_raw_results = []
+
+            for content in result.content:
+                if hasattr(content, "text") and content.text:
+                    mcp_raw_results.append(
+                        content.text
+                    )
+
+            print(
+                "MCP RAW RESULTS:",
+                len(mcp_raw_results)
+            )
+
+            mcp_evidences = mcp_results_to_evidence(
+                mcp_raw_results
+            )
+
+            print(
+                "MCP EVIDENCES:",
+                len(mcp_evidences)
+            )
+
+
+            print(
+                "MCP TOOL CALLED:",
+                tool_name
+            )
+
             contexts = []
 
             for content in (
@@ -1735,7 +1847,10 @@ async def call_mcp_tool(
                     text[:1000]
                 )
 
-            return contexts
+            return {
+                "contexts": contexts,
+                "evidences": mcp_evidences,
+            }
 
 
 # =========================================================
@@ -1830,6 +1945,32 @@ async def chat_completions(
             ""
         )
     ).strip()
+        # ============================================================
+    # DIRECT CATALOG
+    # ============================================================
+
+    catalog_query = CatalogQuery(
+        domain="legal",
+        intent="procedure_lookup",
+        procedure_name=question,
+    )
+
+    catalog_result = catalog_service.lookup(catalog_query)
+
+    catalog_evidences = []
+
+    if catalog_result.matched and catalog_result.record:
+        catalog_evidence = catalog_record_to_evidence(
+            catalog_result.record
+        )
+        catalog_evidences.append(catalog_evidence)
+
+        print(
+            "\nCATALOG MATCH:",
+            catalog_result.record.procedure_name
+        )
+    else:
+        print("\nCATALOG: NO EXACT MATCH")
 
     # =====================================================
     # PERMISSION
@@ -2018,21 +2159,23 @@ async def chat_completions(
         # LOCAL RAG
         # =================================================
 
-        yield (
-            "event: status\n"
+        yield "event: status\n"
+        yield 'data: {"status":"searching_local_rag"}\n\n'
+
+        rag_result = await search_local_rag(
+            question,
+            catalog_evidences=catalog_evidences,
         )
 
-        yield (
-            'data: '
-            '{"status":"searching_local_rag"}'
-            "\n\n"
-        )
+        if isinstance(rag_result, dict):
+            contexts = rag_result.get("contexts", [])
+            evidence_bundle = rag_result.get("evidence_bundle")
+        else:
+            contexts = []
+            evidence_bundle = None
 
-        contexts = (
-            await search_local_rag(
-                question
-            )
-        )
+        mcp_evidences = []
+        source_type = "local"
 
         # =================================================
         # STEP 2
@@ -2155,24 +2298,25 @@ async def chat_completions(
                 "\n\n"
             )
 
-            try:
 
-                contexts = (
-                    await search_dichvucong(
-                        question
-                    )
+
+            try:
+                mcp_result = await search_dichvucong(question)
+
+                contexts = mcp_result.get("contexts", [])
+
+                mcp_raw_results = mcp_result.get("results", [])
+                mcp_evidences = mcp_results_to_evidence(
+                    mcp_raw_results
                 )
 
             except Exception as e:
-
-                print(
-                    "MCP ERROR:",
-                    repr(e)
-                )
-
+                print("MCP ERROR:", repr(e))
                 contexts = []
+                mcp_evidences = []
 
             source_type = "external"
+
 
         # =================================================
         # STEP 4
@@ -2202,39 +2346,28 @@ async def chat_completions(
         # QWEN
         # =================================================
 
-        system_prompt = f"""
-Bạn là trợ lý AI chuyên hỗ trợ
-tra cứu thủ tục hành chính và
-thông tin pháp luật Việt Nam.
+        # PROMPT ASSEMBLY
+        # Evidence Bundle → Prompt
+        # =================================================
 
-Hãy trả lời câu hỏi dựa trên dữ liệu
-pháp lý được cung cấp.
+        # BUILD EVIDENCE BUNDLE
 
-QUY TẮC:
 
-- Chỉ sử dụng dữ liệu được cung cấp.
-- Không tự bịa thông tin.
-- Không tự thêm giấy tờ.
-- Không tự thêm mức phí.
-- Không tự thêm thời hạn.
-- Nếu dữ liệu không có thông tin cần thiết,
-  phải nói rõ dữ liệu chưa đủ.
-- Trả lời bằng tiếng Việt.
-- Nếu có thành phần hồ sơ,
-  liệt kê từng giấy tờ.
-- Không suy đoán.
-- Trả lời ngắn gọn nhưng đầy đủ.
 
-NGUỒN DỮ LIỆU:
+        if evidence_bundle is None:
+            print("WARNING: Local RAG không trả về Evidence Bundle")
 
-{context_text}
 
-CÂU HỎI:
+        # PROMPT ASSEMBLY
+        assembled_prompt = prompt_assembler.build(
+        question=question,
+        evidence_bundle=evidence_bundle,
+        system_instruction=(MODEL API ERROR
+            str(data.get("system_instruction", "")).strip() or None
+        ),
+)
 
-{question}
-
-CÂU TRẢ LỜI:
-"""
+        system_prompt = assembled_prompt
 
         # =================================================
         # STEP 6
@@ -2257,7 +2390,7 @@ CÂU TRẢ LỜI:
                 response = await client.post(
                     MODEL_API_URL,
                     json={
-                        "question":
+                        "prompt":
                             system_prompt
                     },
                     timeout=180.0

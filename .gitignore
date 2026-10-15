@@ -33,3 +33,7 @@ runs/
 # OS
 .DS_Store
 Thumbs.db
+# Local chat history and archives
+data/chat_history.db
+backend.zip
+backend/core_gateway.zip

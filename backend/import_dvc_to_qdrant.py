@@ -18,13 +18,15 @@ from sentence_transformers import SentenceTransformer
 
 QDRANT_URL = "http://localhost:6333"
 
-DATASET_PATH = Path(
-    r"D:\DAI-Legal-Model\data\dichvucong_procedures"
+
+DATASET_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "dichvucong_procedures"
 )
 
-EXCEL_PATH = Path(
-    r"D:\DAI-Legal-Model\cleaned_data (1).xlsx"
-)
+
+EXCEL_PATH = Path(__file__).resolve().parent / "cleaned_data.xlsx"
 
 COLLECTION_NAME = "legal_docs_bge_m3"
 
