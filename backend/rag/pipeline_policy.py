@@ -41,8 +41,11 @@ def choose_data_source(
     has_local_evidence: bool,
     enough_data: bool | None,
     allow_external: bool,
+    mcp_tool_allowed: bool = True,
 ) -> str:
     """Choose local, external, or permission flow without implicit MCP access."""
+    if not mcp_tool_allowed:
+        return "local"
     if has_local_evidence and (enough_data is not False or not allow_external):
         return "local"
     if allow_external:

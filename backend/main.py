@@ -6,8 +6,13 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from backend.catalog.service import CatalogService
 from backend.mcp.adapter import (
+    mcp_result_status,
     mcp_results_to_evidence
 )
+from backend.mcp.contract import call_mcp_tool as call_authorized_mcp_tool
+from backend.mcp.contract import MCPToolCallError
+from backend.mcp.runtime import scoped_tool_environment
+from backend.policy.middleware import PolicyEnforcementMiddleware
 
 from backend.prompt.assembler import PromptAssembler
 
@@ -58,10 +63,22 @@ evidence_builder = EvidenceBuilder(
     max_evidences=10,
 )
 
+def _bounded_int_setting(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 prompt_assembler = PromptAssembler(
-    max_evidence_chars=12000
+    max_evidence_chars=_bounded_int_setting(
+        "PROMPT_MAX_EVIDENCE_CHARS", 6000, 1000, 12000
+    )
 )
+MODEL_MAX_NEW_TOKENS = _bounded_int_setting("MODEL_MAX_NEW_TOKENS", 256, 1, 512)
 verifier = Verifier()
+policy_middleware = PolicyEnforcementMiddleware()
 
 _LOG_TEXT_LIMIT = 2000
 _SECRET_VALUE_RE = re.compile(
@@ -1556,8 +1573,14 @@ def parse_bool(
 async def call_mcp_tool(
     tool_name: str,
     arguments: dict,
+    allowed_tools: list[str] | tuple[str, ...],
     request_id: str = "unknown",
 ):
+
+    if tool_name not in frozenset(allowed_tools):
+        raise MCPToolCallError(
+            f"Tool MCP khong duoc cap quyen: {tool_name}"
+        )
 
     print(
         "\n=============================="
@@ -1581,100 +1604,73 @@ async def call_mcp_tool(
             ],
 
             env={
-                **os.environ,
-                "PYTHONIOENCODING":
-                    "utf-8"
+                **scoped_tool_environment(allowed_tools, os.environ),
+                "PYTHONIOENCODING": "utf-8",
             }
         )
     )
 
-    async with stdio_client(
-        server_params
-    ) as (read, write):
+    try:
+        timeout_seconds = float(os.getenv("MCP_CLIENT_TIMEOUT_SECONDS", "60"))
 
-        async with ClientSession(
-            read,
-            write
-        ) as session:
-
-            await session.initialize()
-
-            print(
-                "MCP CONNECTED"
-            )
-
-            result = (
-                await session.call_tool(
-                    tool_name,
-                    arguments=arguments
-                )
-            )
-
-            print(
-                "[MCP STAGE]",
-                "request_id=", request_id,
-                "status=called tool=",
-                tool_name
-            )
-
-            mcp_raw_results = []
-
-            for content in result.content:
-                if hasattr(content, "text") and content.text:
-                    mcp_raw_results.append(
-                        content.text
+        async def invoke_mcp_session():
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    print("MCP CONNECTED")
+                    return await call_authorized_mcp_tool(
+                        session,
+                        tool_name,
+                        arguments,
+                        allowed_tools=allowed_tools,
+                        timeout_seconds=timeout_seconds,
                     )
 
-            print("[MCP RESULTS]", "count=", len(mcp_raw_results), "chars=", sum(map(len, mcp_raw_results)))
+        result_text = await asyncio.wait_for(
+            invoke_mcp_session(), timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError as exc:
+        raise MCPToolCallError(
+            f"MCP startup or tool call exceeded {timeout_seconds:g}s.",
+            "MCP_TOOL_TIMEOUT",
+        ) from exc
+    except (MCPToolCallError, ValueError) as exc:
+        print(
+            "[MCP STAGE]", "request_id=", request_id,
+            "status=failed", "tool=", tool_name,
+            "exception_type=", type(exc).__name__,
+        )
+        raise
 
-            mcp_evidences = mcp_results_to_evidence(
-                mcp_raw_results
+    print(
+        "[MCP STAGE]",
+        "request_id=", request_id,
+        "status=called tool=",
+        tool_name
+    )
+
+    if tool_name == "search_dichvucong":
+        result_status = mcp_result_status(result_text)
+        if result_status == "invalid_response":
+            raise MCPToolCallError(
+                "MCP returned a malformed DVC result.", "MCP_INVALID_RESPONSE"
             )
-
-            print(
-                "MCP EVIDENCES:",
-                len(mcp_evidences)
-            )
-
-
-            print("[MCP STAGE]", "request_id=", request_id, "status=called tool=", tool_name)
-
-            contexts = []
-
-            for content in (
-                result.content
-            ):
-
-                if hasattr(
-                    content,
-                    "text"
-                ):
-
-                    text = (
-                        content.text
-                    )
-
-                    if text:
-
-                        contexts.append(
-                            text
-                        )
-
-            print(
-                "MCP RESULTS:",
-                len(contexts)
-            )
-
-            print(
-                "[MCP RESULTS]",
-                "count=", len(contexts),
-                "chars=", sum(map(len, contexts)),
-            )
-
-            return {
-                "contexts": contexts,
-                "evidences": mcp_evidences,
-            }
+        mcp_raw_results = [result_text] if result_status == "completed" else []
+    else:
+        result_status = "completed" if result_text else "no_match"
+        mcp_raw_results = []
+    print(
+        "[MCP RESULTS]",
+        "count=", len(mcp_raw_results),
+        "chars=", sum(map(len, mcp_raw_results)),
+    )
+    mcp_evidences = mcp_results_to_evidence(mcp_raw_results)
+    contexts = [result_text] if result_status == "completed" and result_text else []
+    return {
+        "status": result_status,
+        "contexts": contexts,
+        "evidences": mcp_evidences,
+    }
 
 
 # =========================================================
@@ -1683,6 +1679,7 @@ async def call_mcp_tool(
 
 async def search_dichvucong(
     question: str,
+    allowed_tools: list[str] | tuple[str, ...],
     request_id: str = "unknown",
 ):
 
@@ -1691,6 +1688,7 @@ async def search_dichvucong(
         {
             "keyword": question
         },
+        allowed_tools=allowed_tools,
         request_id=request_id,
     )
 
@@ -1846,6 +1844,34 @@ async def chat_completions(
         raw_allow_external
     )
 
+    policy_domain = str(data.get("policy_domain", "") or "").strip().lower()
+    requested_mcp_tools = data.get("mcp_allowed_tools", [])
+    if not isinstance(requested_mcp_tools, list):
+        requested_mcp_tools = []
+    domain_prompt_template = None
+    verification_threshold = None
+    try:
+        if policy_domain:
+            core_policy = policy_middleware.apply(policy_domain)
+            domain_prompt_template = core_policy.domain_config.prompt_template
+            verification_threshold = (
+                core_policy.domain_config.policy.verification_threshold
+            )
+            effective_mcp_tools = policy_middleware.constrain_tools(
+                policy_domain,
+                (str(tool) for tool in requested_mcp_tools),
+            )
+        else:
+            effective_mcp_tools = ()
+    except KeyError:
+        effective_mcp_tools = ()
+        domain_prompt_template = None
+    print(
+        "[PIPELINE STAGE]", "request_id=", request_id,
+        "stage=mcp_policy", "policy_domain=", policy_domain or "missing",
+        "allowed_tools=", len(effective_mcp_tools),
+    )
+
     # =====================================================
     # XỬ LÝ TRẢ LỜI "CÓ" / "KHÔNG" CHO MCP
     # =====================================================
@@ -1942,6 +1968,9 @@ async def chat_completions(
             "prompt_assembly": "not_started",
             "model_api": "not_started",
             "citation_verification": "not_started",
+            "claim_grounding_status": "not_evaluated",
+            "confidence_status": "not_evaluated",
+            "verification_status": "not_started",
             "citation_attempts": 0,
             "evidence_count": 0,
             "evidence_ids": [],
@@ -2130,6 +2159,7 @@ async def chat_completions(
         # =================================================
 
         has_local_evidence = bool(contexts or evidence_bundle.evidences)
+        dvc_tool_allowed = "search_dichvucong" in effective_mcp_tools
         data_source = choose_data_source(
             has_local_evidence=has_local_evidence,
             enough_data=(
@@ -2138,7 +2168,10 @@ async def chat_completions(
                 else None
             ),
             allow_external=allow_external,
+            mcp_tool_allowed=dvc_tool_allowed,
         )
+        if not dvc_tool_allowed and pipeline_state["enough_data"] == "insufficient":
+            pipeline_state["external_fallback"] = "policy_denied"
 
         if data_source == "local":
 
@@ -2272,25 +2305,34 @@ async def chat_completions(
             try:
                 mcp_result = await search_dichvucong(
                     question,
+                    allowed_tools=effective_mcp_tools,
                     request_id=request_id,
                 )
 
                 contexts = mcp_result.get("contexts", [])
                 mcp_evidences = mcp_result.get("evidences", [])
-                pipeline_state["external_fallback"] = "completed"
+                pipeline_state["external_fallback"] = mcp_result.get(
+                    "status", "completed"
+                )
 
             except Exception as e:
+                mcp_failure_code = getattr(
+                    e, "reason_code", "MCP_UPSTREAM_ERROR"
+                )
                 print(
                     "[PIPELINE STAGE]",
                     "request_id=", request_id,
                     "stage=external_fallback",
                     "status=failed",
-                    "reason_code=UNKNOWN_PIPELINE_FAILURE",
+                    "reason_code=", mcp_failure_code,
                     "exception_type=", type(e).__name__,
                 )
                 contexts = []
                 mcp_evidences = []
-                pipeline_state["external_fallback"] = "error"
+                pipeline_state["external_fallback"] = (
+                    "timeout" if mcp_failure_code == "MCP_TOOL_TIMEOUT" else "error"
+                )
+                pipeline_state["external_fallback_reason_code"] = mcp_failure_code
 
             source_type = "external"
 
@@ -2355,6 +2397,7 @@ async def chat_completions(
         system_instruction=(
         str(data.get("system_instruction", "")).strip() or None
         ),
+        domain_prompt_template=domain_prompt_template,
 )
 
         system_prompt = assembled_prompt
@@ -2392,6 +2435,7 @@ async def chat_completions(
                     return verifier.verify(
                         structured_answer,
                         selected_evidence_bundle,
+                        minimum_confidence=verification_threshold,
                     )
                 finally:
                     pipeline_state["stage_durations_ms"]["citation_verification"] = round(
@@ -2441,7 +2485,7 @@ async def chat_completions(
                             prompt=model_prompt,
                             request_id=request_id,
                             citation_attempt=citation_attempt,
-                            max_new_tokens=768,
+                            max_new_tokens=MODEL_MAX_NEW_TOKENS,
                             timeout_seconds=180.0,
                         )
                 except Exception as exc:
@@ -2535,11 +2579,19 @@ async def chat_completions(
                 outcome.generation_error is None
                 and outcome.last_model_response.get("success") is True
             )
-            verification_status = (
-                ("passed" if verification_result.passed else "failed")
-                if generation_succeeded
-                else "error"
-            )
+            if not generation_succeeded:
+                verification_status = "error"
+            elif not verification_result.citation_integrity_passed:
+                verification_status = "failed"
+            elif verification_result.confidence_status in ("failed", "invalid_score"):
+                verification_status = "failed"
+            elif (
+                verification_result.confidence_status == "not_verified"
+                or verification_result.claim_grounding_status == "not_evaluated"
+            ):
+                verification_status = "not_verified"
+            else:
+                verification_status = "passed" if verification_result.passed else "failed"
             pipeline_state["model_api"] = (
                 "completed" if generation_succeeded else "error"
             )
@@ -2549,10 +2601,21 @@ async def chat_completions(
             pipeline_state["model_processing_time_ms"] = (
                 outcome.model_processing_time_ms
             )
-            pipeline_state["citation_verification"] = verification_status
+            pipeline_state["citation_verification"] = (
+                "passed" if verification_result.citation_integrity_passed
+                else "failed" if generation_succeeded else "error"
+            )
+            pipeline_state["confidence_status"] = verification_result.confidence_status
+            pipeline_state["confidence_score"] = verification_result.confidence_score
+            pipeline_state["verification_threshold"] = verification_threshold
+            pipeline_state["claim_grounding_status"] = (
+                verification_result.claim_grounding_status
+            )
+            pipeline_state["verification_status"] = verification_status
             pipeline_state["stage_status"]["verifier"] = (
                 "passed" if verification_status == "passed"
-                else "failed" if verification_status == "failed"
+                else verification_status
+                if verification_status in ("failed", "not_verified")
                 else "unknown"
             )
             answer = (
@@ -2584,14 +2647,27 @@ async def chat_completions(
                     pipeline_state["upstream_status_code"] = last_failure[
                         "upstream_status_code"
                     ]
-            elif generation_succeeded:
+            elif generation_succeeded and verification_status == "passed":
                 pipeline_state.pop("failure_stage", None)
                 pipeline_state.pop("failure_reason_code", None)
                 pipeline_state.pop("exception_type", None)
                 pipeline_state.pop("upstream_status_code", None)
             elif verification_status == "failed":
                 pipeline_state["failure_stage"] = "verifier"
-                pipeline_state["failure_reason_code"] = "VERIFIER_NOT_PASSED"
+                pipeline_state["failure_reason_code"] = (
+                    "CITATION_VERIFICATION_NOT_PASSED"
+                    if not verification_result.citation_integrity_passed
+                    else "VERIFICATION_CONFIDENCE_NOT_PASSED"
+                    if verification_result.confidence_status in ("failed", "invalid_score")
+                    else "VERIFIER_NOT_PASSED"
+                )
+            elif verification_status == "not_verified":
+                pipeline_state["failure_stage"] = "verifier"
+                pipeline_state["failure_reason_code"] = (
+                    "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
+                    if verification_result.confidence_status == "not_verified"
+                    else "CLAIM_GROUNDING_NOT_EVALUATED"
+                )
             elif verification_status == "error":
                 pipeline_state["failure_stage"] = "model_api_response"
                 pipeline_state["failure_reason_code"] = "UNKNOWN_PIPELINE_FAILURE"
@@ -2604,6 +2680,9 @@ async def chat_completions(
                 "[CITATION INTEGRITY]",
                 "request_id=", request_id,
                 "status=", verification_status,
+                "citation_status=", pipeline_state["citation_verification"],
+                "claim_grounding_status=", pipeline_state["claim_grounding_status"],
+                "confidence_status=", pipeline_state["confidence_status"],
                 "checked_claims=", verification_result.checked_claims,
                 "linked_claims=", verification_result.linked_claims,
                 "semantic_support=not_evaluated",

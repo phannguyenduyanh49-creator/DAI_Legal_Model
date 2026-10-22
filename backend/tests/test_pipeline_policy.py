@@ -56,6 +56,15 @@ def test_external_mcp_requires_explicit_opt_in_when_local_data_is_absent():
     assert choose_data_source(False, False, True) == "external"
 
 
+def test_policy_denial_prevents_permission_prompt_and_mcp_fallback():
+    assert choose_data_source(
+        has_local_evidence=False,
+        enough_data=False,
+        allow_external=True,
+        mcp_tool_allowed=False,
+    ) == "local"
+
+
 def test_insufficient_local_data_uses_external_only_after_opt_in():
     assert choose_data_source(True, False, False) == "local"
     assert choose_data_source(True, False, True) == "external"

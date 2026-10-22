@@ -98,7 +98,7 @@ class DomainRegistryService:
             prompt_template="Bạn là Luật sư chuyên nghiệp. Hãy trả lời câu hỏi dựa TRÊN HẾT các điều luật được cung cấp sau:\n{context}\nCâu hỏi: {query}\nYêu cầu bắt buộc: Trích dẫn rõ điều luật.",
             chunking_strategy=ChunkingStrategy(strategy_name="semantic_legal", chunk_size=512, chunk_overlap=64),
             persona=PersonaConfig(tone="formal", language_style="Chuẩn mực pháp lý, khách quan", system_prompt_addition="Tuyệt đối không suy đoán ngoài điều luật."),
-            policy=PolicyConfig(mode="STRICT", verification_threshold=0.85, allowed_mcp_tools=["tra_cuu_van_ban", "kiem_tra_hieu_luc"], risk_alert_enabled=True)
+            policy=PolicyConfig(mode="STRICT", verification_threshold=0.85, allowed_mcp_tools=["search_legal_documents", "search_procedure", "search_dichvucong"], risk_alert_enabled=True)
         )
 
         # 2. Cấu hình mẫu: Lĩnh vực Tổng hợp / Dịch vụ công (Friendly Mode)
@@ -120,7 +120,7 @@ class DomainRegistryService:
             prompt_template="Bạn là chuyên gia thủ tục hành chính công. Hướng dẫn quy trình dựa trên dữ liệu:\n{context}\nNội dung cần xử lý: {query}",
             chunking_strategy=ChunkingStrategy(strategy_name="paragraph", chunk_size=768, chunk_overlap=96),
             persona=PersonaConfig(tone="professional", language_style="Rõ ràng, mạch lạc, dễ thực hiện", system_prompt_addition="Liệt kê rõ các bước hồ sơ và lệ phí nếu có."),
-            policy=PolicyConfig(mode="STRICT", verification_threshold=0.80, allowed_mcp_tools=["tra_cuu_thu_tuc_hanh_chinh", "kiem_tra_ho_so"], risk_alert_enabled=True)
+            policy=PolicyConfig(mode="STRICT", verification_threshold=0.80, allowed_mcp_tools=["search_procedure", "search_dichvucong"], risk_alert_enabled=True)
         )
 
         self.register_domain(legal_config)

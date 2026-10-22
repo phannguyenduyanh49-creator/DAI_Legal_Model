@@ -1,11 +1,28 @@
 from fastapi import FastAPI, Header
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 import torch
 import uvicorn
 import time
 import hashlib
+import sys
+import os
+
+
+def configure_utf8_stdio() -> None:
+    """Keep Windows console encoding from preventing API startup on Vietnamese logs."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+configure_utf8_stdio()
 
 # ============================================================
 # CONFIG
@@ -16,6 +33,17 @@ LORA_MODEL = r"D:\Prj\DAI-Legal-Model\outputs\qwen-legal-lora-v4"
 
 HOST = "0.0.0.0"
 PORT = 8001
+
+
+def _configured_generation_limit() -> int:
+    try:
+        value = int(os.getenv("MODEL_MAX_NEW_TOKENS", "256"))
+    except (TypeError, ValueError):
+        value = 256
+    return max(1, min(value, 512))
+
+
+MODEL_MAX_NEW_TOKENS = _configured_generation_limit()
 
 
 # ============================================================
@@ -35,7 +63,7 @@ app = FastAPI(
 
 class GenerateRequest(BaseModel):
     prompt: str
-    max_new_tokens: int = 512
+    max_new_tokens: int = Field(default=MODEL_MAX_NEW_TOKENS, ge=1, le=MODEL_MAX_NEW_TOKENS)
 
 
 # ============================================================

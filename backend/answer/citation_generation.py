@@ -97,6 +97,20 @@ async def generate_with_citation_retry(
                 ),
             )
 
+        # Re-generating cannot satisfy a configured confidence threshold when
+        # this deployment has no confidence scorer. Keep the answer withheld.
+        if answer and last_verification.citation_integrity_passed:
+            return CitationGenerationResult(
+                answer=None,
+                structured_answer=last_structured,
+                verification=last_verification,
+                attempts=attempt,
+                last_model_response=last_response,
+                model_processing_time_ms=(
+                    model_processing_total if has_model_processing_time else None
+                ),
+            )
+
         if attempt < attempts_limit and evidence_bundle.evidences:
             current_prompt = _retry_prompt(prompt, evidence_bundle)
 

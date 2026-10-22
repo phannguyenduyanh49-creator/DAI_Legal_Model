@@ -1,7 +1,7 @@
 # DAI-Legal-Model
 
 > **AI Legal Assistant for Vietnamese administrative procedures**  
-> Qwen2.5-7B-Instruct + LoRA V3 + BGE-M3 RAG + Qdrant + Reranker + MCP/DVC + FastAPI + React/Vite
+> Default stack: Qwen2.5-7B-Instruct + LoRA V4 + BGE-M3 RAG + Qdrant + Reranker + MCP/DVC + FastAPI + React/Vite
 
 ## 📌 Overview
 
@@ -341,6 +341,19 @@ Distance:
 COSINE
 ```
 
+The runtime has a separate MCP local-search index:
+
+| Pipeline | Collection | Embedding model | Configured vector size |
+|---|---|---|---:|
+| Core API Local RAG | `legal_docs_bge_m3` | `BAAI/bge-m3` | 1024 |
+| MCP `search_legal_documents` | `legal_docs` | `bkai-foundation-models/vietnamese-bi-encoder` | 768 |
+
+These collections use different embedding models and vector dimensions. Keep each
+query pipeline paired with its matching collection. `backend/import_data.py`
+recreates `legal_docs`; do not run it against a populated database unless you
+intend to replace that collection. Qdrant must be running before either retrieval
+pipeline can be verified.
+
 The current DVC import workflow uses:
 
 ```powershell
@@ -552,54 +565,31 @@ python check_dataset.py
 
 ## ▶️ Running the Full System
 
-The application uses three main services.
+The default launcher starts the Legacy/Core API, the Model API, and the Core Gateway. It runs `backend.model_api`, which loads `Qwen/Qwen2.5-7B-Instruct` with 4-bit NF4/BF16 settings and the `outputs/qwen-legal-lora-v4` adapter.
 
-### 1. Model API
-
-```powershell
-cd D:\DAI-Legal-Model
-.\.venv\Scriptsctivate
-python model_api.py
-```
-
-Model API:
-
-```text
-http://localhost:8001
-```
-
-### 2. Core API
-
-Open another terminal:
+Start PostgreSQL and Qdrant, then start the API stack from the repository root:
 
 ```powershell
-cd D:\DAI-Legal-Model
-.\.venv\Scriptsctivate
-python backend\main.py
+docker compose -f backend/docker-compose.yml up -d postgres qdrant
+.\.venv\Scripts\python.exe run_gateway_stack.py
 ```
 
-Core API:
-
-```text
-http://localhost:8000
-```
-
-### 3. Frontend
-
-Open another terminal:
+The APIs listen on ports 8000 (Legacy/Core), 8001 (Model API), and 8002 (Core Gateway). The frontend uses the Gateway. In another terminal:
 
 ```powershell
-cd D:\DAI-Legal-Model\FE
-npm run dev
+cd FE
+npm.cmd run dev
 ```
 
-Frontend:
+`python model_api.py` is a separate legacy entrypoint. It reads `outputs/active/registry.json` and falls back to the V3 adapter; it is not launched by `run_gateway_stack.py`. The two entrypoints use different adapter-selection behavior, so both are retained.
 
-```text
-http://localhost:5173
-```
+MCP is launched by the Legacy/Core API when permission and policy allow the requested tool.
 
-MCP is automatically launched by the Core API during normal operation.
+### Generation limits and verification status
+
+`MODEL_MAX_NEW_TOKENS` controls the maximum response length (default `256`, bounded to `1..512`). `PROMPT_MAX_EVIDENCE_CHARS` controls the prompt evidence budget (default `6000`, bounded to `1000..12000`). These settings can be overridden in the process environment and reset by removing the override.
+
+The current verifier checks citation IDs and evidence references; it does not calculate semantic support or a confidence score. Domain policies define `verification_threshold`, so answers remain withheld with `confidence_status=not_verified` until a real confidence scorer is integrated. A passing citation check alone is not reported as passing the configured confidence threshold.
 
 ---
 

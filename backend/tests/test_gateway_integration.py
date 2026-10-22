@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from backend import core_gateway
 
 
-def test_gateway_proxies_core_sse_and_preserves_pipeline_telemetry(caplog):
+def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(caplog):
     evidence_id = "rag:procedure-123"
     answer = f"Nộp hồ sơ theo hướng dẫn. [Evidence ID: {evidence_id}]"
     pipeline = {
@@ -20,6 +20,9 @@ def test_gateway_proxies_core_sse_and_preserves_pipeline_telemetry(caplog):
         "prompt_assembly": "completed",
         "model_api": "completed",
         "citation_verification": "passed",
+        "claim_grounding_status": "not_evaluated",
+        "confidence_status": "not_verified",
+        "verification_status": "not_verified",
         "citation_attempts": 1,
         "evidence_count": 1,
         "evidence_ids": [evidence_id],
@@ -30,7 +33,7 @@ def test_gateway_proxies_core_sse_and_preserves_pipeline_telemetry(caplog):
             "retrieval": "completed",
             "evidence_builder": "completed",
             "model_api": "completed",
-            "verifier": "passed",
+            "verifier": "not_verified",
         },
         "stage_durations_ms": {"retrieval": 18.25, "prompt_assembly": 1.75},
     }
@@ -38,7 +41,7 @@ def test_gateway_proxies_core_sse_and_preserves_pipeline_telemetry(caplog):
         "data: " + json.dumps({"delta": answer}, ensure_ascii=False) + "\n\n"
         "data: " + json.dumps({
             "status": "done",
-            "verifier": "passed",
+            "verifier": "not_verified",
             "verifier_scope": "citation_integrity_only",
             "pipeline": pipeline,
         }, ensure_ascii=False) + "\n\n"
@@ -78,8 +81,11 @@ def test_gateway_proxies_core_sse_and_preserves_pipeline_telemetry(caplog):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "SUCCESS"
-    assert data["answer"] == answer
+    assert data["status"] == "FAILED"
+    assert data["pipeline_execution"]["answer_withheld"] is True
+    assert data["pipeline_execution"]["claim_grounding_status"] == "not_evaluated"
+    assert data["pipeline_execution"]["confidence_status"] == "not_verified"
+    assert answer not in data["answer"]
     assert data["pipeline_execution"]["evidence_builder"] == "completed"
     assert data["pipeline_execution"]["enough_data"] == "insufficient"
     assert data["pipeline_execution"]["missing_fields"] == ["fees"]
@@ -92,6 +98,13 @@ def test_gateway_proxies_core_sse_and_preserves_pipeline_telemetry(caplog):
     assert float(response.headers["x-gateway-latency-ms"]) >= 0
     assert captured["body"]["prompt"] == "Câu hỏi kiểm thử"
     assert captured["headers"]["X-Request-ID"] == data["request_id"]
+    assert captured["body"]["policy_domain"] == "legal_ai"
+    assert captured["body"]["mcp_allowed_tools"] == [
+        "search_dichvucong",
+        "search_legal_documents",
+        "search_procedure",
+    ]
+    assert "xác minh với văn bản" in captured["body"]["system_instruction"]
     assert data["request_id"].startswith("trace_legal_")
     assert "CÃ¢u há»i kiá»ƒm thá»­" not in caplog.text
     assert answer not in caplog.text

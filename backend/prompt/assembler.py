@@ -1,4 +1,5 @@
 from typing import Optional
+from dataclasses import replace
 
 from backend.evidence.schemas import EvidenceBundle
 
@@ -16,6 +17,7 @@ class PromptAssembler:
         question: str,
         evidence_bundle: EvidenceBundle,
         system_instruction: Optional[str] = None,
+        domain_prompt_template: Optional[str] = None,
     ) -> str:
 
         system_part = system_instruction or (
@@ -32,6 +34,17 @@ class PromptAssembler:
         evidence_context = self._build_evidence_context(
             evidence_bundle
         )
+
+        domain_prompt = ""
+        if domain_prompt_template:
+            try:
+                domain_prompt = domain_prompt_template.format(
+                    context="the shared EVIDENCE section above",
+                    query=question,
+                )
+            except (KeyError, IndexError, ValueError):
+                # A malformed registry template must not break the answer pipeline.
+                domain_prompt = ""
 
         prompt = (
             f"{system_part}\n\n"
@@ -61,6 +74,7 @@ class PromptAssembler:
         ) or "none"
         return (
             prompt
+            + ("\n=== DOMAIN-SPECIFIC INSTRUCTIONS ===\n" + domain_prompt + "\n" if domain_prompt else "")
             + "\n=== REQUIRED CITATION FORMAT ===\n"
             + "Cite each legal factual sentence immediately with "
             + "[Evidence ID: <exact allowed ID>].\n"
@@ -72,7 +86,13 @@ class PromptAssembler:
         """Return exactly the evidence sections that fit in the assembled prompt."""
         selected = []
         total_chars = 0
-        for evidence in evidence_bundle.evidences:
+        # When an approved external lookup supplied official DVC evidence,
+        # give it prompt-budget priority over similarly ranked local snippets.
+        ordered_evidences = sorted(
+            evidence_bundle.evidences,
+            key=lambda evidence: evidence.source_type != "mcp",
+        )
+        for evidence in ordered_evidences:
             section = (
                 f"[Evidence ID: {evidence.evidence_id}]\n"
                 f"Source: {evidence.source_type}\n"
@@ -80,7 +100,29 @@ class PromptAssembler:
                 f"Score: {evidence.score}\n"
                 f"Content:\n{evidence.content}\n"
             )
-            if total_chars + len(section) > self.max_evidence_chars:
+            remaining = self.max_evidence_chars - total_chars
+            if len(section) > remaining:
+                # The first relevant Evidence item can exceed the entire
+                # budget. Keep its citation identity and include a marked
+                # prefix instead of silently dropping all usable evidence.
+                if not selected:
+                    header = (
+                        f"[Evidence ID: {evidence.evidence_id}]\n"
+                        f"Source: {evidence.source_type}\n"
+                        f"Title: {evidence.title or ''}\n"
+                        f"Score: {evidence.score}\n"
+                        "Content:\n"
+                    )
+                    truncation_marker = "\n[Evidence content truncated to fit prompt budget.]"
+                    content_budget = max(0, remaining - len(header) - len(truncation_marker))
+                    if content_budget:
+                        selected.append(
+                            replace(
+                                evidence,
+                                content=evidence.content[:content_budget]
+                                + truncation_marker,
+                            )
+                        )
                 break
             selected.append(evidence)
             total_chars += len(section)

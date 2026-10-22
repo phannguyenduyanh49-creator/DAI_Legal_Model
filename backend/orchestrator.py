@@ -28,7 +28,8 @@ class DomainRouterPlanner:
             "administrative_law": ["thủ tục hành chính", "khiếu nại", "tố cáo", "giấy phép", "cơ quan nhà nước", "xử phạt vi phạm hành chính", "UBND", "quyết định hành chính"],
             "labor_law": ["hợp đồng lao động", "sa thải", "lương thưởng", "bảo hiểm xã hội", "thôi việc", "đình công", "tiền lương", "giờ làm việc"],
             "land_law": ["đất đai", "sổ đỏ", "sổ hồng", "quyền sử dụng đất", "thu hồi đất", "giải phóng mặt bằng", "tranh chấp ranh giới", "sang nhượng nhà đất"],
-            "general_legal": []
+            "general_legal": [],
+            "general_assistant": []
         }
 
     def route_domain(self, query_analysis: AnalysisResult, domain_hint: Optional[str] = None) -> tuple[str, float]:

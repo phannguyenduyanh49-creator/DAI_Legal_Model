@@ -22,6 +22,7 @@ from backend import answer
 from backend.query_analysis import QueryAnalysisService, AnalysisResult
 from backend.orchestrator import DomainRouterPlanner, RoutingPlanResult
 from backend.domain_registry import registry_service, domain_router
+from backend.policy.middleware import PolicyEnforcementMiddleware
 # ==============================================================================
 # CẤU HÌNH HỆ THỐNG LOGGING & ENCODING UTF-8 (HỖ TRỢ WINDOWS CONSOLE)
 # ==============================================================================
@@ -61,6 +62,14 @@ UNVERIFIED_ANSWER_FALLBACK = (
 )
 
 
+def _generation_token_limit() -> int:
+    try:
+        value = int(os.getenv("MODEL_MAX_NEW_TOKENS", "256"))
+    except (TypeError, ValueError):
+        value = 256
+    return max(1, min(value, 512))
+
+
 def _citation_integrity_failure_reason(
     result: "LegacyPipelineResult",
 ) -> str | None:
@@ -75,6 +84,25 @@ def _citation_integrity_failure_reason(
     citation_status = result.pipeline.get("citation_verification")
     if citation_status in ("failed", "error"):
         return "CITATION_VERIFICATION_NOT_PASSED"
+    threshold = result.pipeline.get("verification_threshold")
+    confidence_status = result.pipeline.get("confidence_status")
+    if threshold is not None and confidence_status != "passed":
+        return (
+            "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
+            if confidence_status == "not_verified"
+            else "VERIFICATION_CONFIDENCE_NOT_PASSED"
+        )
+    if result.verifier_status not in ("passed", "not_verified"):
+        return "VERIFIER_NOT_PASSED"
+    grounding_status = result.pipeline.get("claim_grounding_status")
+    if grounding_status != "passed":
+        return (
+            "CLAIM_GROUNDING_NOT_EVALUATED"
+            if grounding_status in (None, "not_evaluated")
+            else "CLAIM_GROUNDING_NOT_PASSED"
+        )
+    if result.pipeline.get("verification_status") != "passed":
+        return "VERIFICATION_NOT_PASSED"
     if result.verifier_status != "passed":
         return "VERIFIER_NOT_PASSED"
 
@@ -204,6 +232,7 @@ class CoreAPIGateway:
 
         self.query_analyzer = QueryAnalysisService()
         self.orchestrator = DomainRouterPlanner()
+        self.policy_middleware = PolicyEnforcementMiddleware()
 
         # Core API hiện tại vẫn chịu trách nhiệm Retrieval/Evidence/Prompt/Qwen
         self.legacy_api_url = os.getenv(
@@ -225,13 +254,17 @@ class CoreAPIGateway:
         allow_external: bool,
         system_instruction: str,
         request_id: str,
+        policy_domain: str,
+        allowed_mcp_tools: list[str],
     ) -> LegacyPipelineResult:
         """Gọi Core API cũ để tái sử dụng pipeline Retrieval/Evidence/Prompt/Qwen."""
         payload = {
             "prompt": query,
             "allow_external": allow_external,
             "system_instruction": system_instruction,
-            "max_new_tokens": 768,
+            "policy_domain": policy_domain,
+            "mcp_allowed_tools": allowed_mcp_tools,
+            "max_new_tokens": _generation_token_limit(),
         }
 
         timeout_seconds = 390.0
@@ -465,18 +498,9 @@ class CoreAPIGateway:
                 # BƯỚC 3: Đọc Domain Registry và áp dụng Policy
                 stage_started_at = time.perf_counter()
                 selected_domain = routing_plan_result.selected_domain
-                available_domains = registry_service.list_all_domains()
-
-                # Orchestrator có thể trả về domain con chưa được đăng ký.
-                # Khi đó, dùng cấu hình pháp lý tổng quát legal_ai.
-                if selected_domain in available_domains:
-                    registry_domain_id = selected_domain
-                else:
-                    registry_domain_id = "legal_ai"
-
-                domain_config = registry_service.get_domain_config(
-                    registry_domain_id
-                )
+                enforced_policy = self.policy_middleware.apply(selected_domain)
+                domain_config = enforced_policy.domain_config
+                registry_domain_id = domain_config.domain_id
                 pipeline_execution["domain_policy"] = "resolved"
                 pipeline_execution["stage_durations_ms"]["domain_policy"] = round(
                     (time.perf_counter() - stage_started_at) * 1000, 2
@@ -503,6 +527,12 @@ class CoreAPIGateway:
                         "Trả lời rõ ràng, thân thiện và dễ hiểu. "
                         "Phân biệt thông tin đã xác minh với thông tin chưa chắc chắn."
                     )
+                if domain_config.policy.risk_alert_enabled:
+                    system_instruction += (
+                        " Khi thông tin có thể ảnh hưởng đến quyền, nghĩa vụ hoặc "
+                        "thời hạn pháp lý, nhắc người dùng xác minh với văn bản "
+                        "và cơ quan có thẩm quyền; nêu rõ nếu bằng chứng hiện có chưa đủ."
+                    )
 
                 # BƯỚC 4: Gọi pipeline Retrieval -> Evidence -> Prompt -> Qwen
                 logger.info(
@@ -517,6 +547,8 @@ class CoreAPIGateway:
                     allow_external=request_payload.allow_external,
                     system_instruction=system_instruction,
                     request_id=request_id,
+                    policy_domain=registry_domain_id,
+                    allowed_mcp_tools=list(enforced_policy.allowed_mcp_tools),
                 )
                 pipeline_execution["stage_durations_ms"]["legacy_api"] = round(
                     (time.perf_counter() - stage_started_at) * 1000, 2
@@ -535,6 +567,11 @@ class CoreAPIGateway:
                     "prompt_assembly",
                     "model_api",
                     "citation_verification",
+                    "confidence_status",
+                    "confidence_score",
+                    "verification_threshold",
+                    "claim_grounding_status",
+                    "verification_status",
                     "citation_attempts",
                     "evidence_count",
                     "evidence_ids",
@@ -556,6 +593,15 @@ class CoreAPIGateway:
                             pipeline_execution[key].update(legacy_pipeline[key])
                         else:
                             pipeline_execution[key] = legacy_pipeline[key]
+                pipeline_execution.setdefault(
+                    "verification_threshold",
+                    domain_config.policy.verification_threshold,
+                )
+                pipeline_execution.setdefault("confidence_status", "not_verified")
+                pipeline_execution.setdefault(
+                    "claim_grounding_status", "not_evaluated"
+                )
+                pipeline_execution.setdefault("verification_status", "not_verified")
                 pipeline_execution["verifier"] = legacy_result.verifier_status
                 pipeline_execution["verifier_scope"] = legacy_result.verifier_scope
                 pipeline_execution["verifier_status"] = legacy_result.verifier_status
@@ -585,6 +631,7 @@ class CoreAPIGateway:
                     "Qwen_Legal_Generation_With_Citations": (
                         "FAILED"
                         if legacy_pipeline.get("citation_verification") in ("failed", "error")
+                        or legacy_result.verifier_status != "passed"
                         or legacy_pipeline.get("model_api") != "completed"
                         else str(legacy_pipeline.get("model_api", "UNKNOWN")).upper()
                     ),

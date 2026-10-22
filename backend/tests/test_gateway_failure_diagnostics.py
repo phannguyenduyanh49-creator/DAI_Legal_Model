@@ -18,6 +18,9 @@ def verified_result(**pipeline_overrides):
     evidence_id = "rag:test-1"
     pipeline = {
         "citation_verification": "passed",
+        "claim_grounding_status": "passed",
+        "confidence_status": "not_required",
+        "verification_status": "passed",
         "evidence_ids": [evidence_id],
         "cited_evidence_ids": [evidence_id],
     }
@@ -45,6 +48,30 @@ def test_gateway_returns_stable_citation_failure_reasons(result, expected):
 
 def test_gateway_passes_only_matching_citation_telemetry():
     assert _citation_integrity_failure_reason(verified_result()) is None
+
+
+def test_gateway_requires_confidence_when_threshold_is_configured():
+    result = verified_result(
+        verification_threshold=0.85,
+        confidence_status="not_verified",
+        claim_grounding_status="not_evaluated",
+        verification_status="not_verified",
+    )
+    assert (
+        _citation_integrity_failure_reason(result)
+        == "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
+    )
+
+
+def test_gateway_does_not_call_citation_integrity_semantic_grounding():
+    result = verified_result(
+        claim_grounding_status="not_evaluated",
+        verification_status="not_verified",
+    )
+    assert (
+        _citation_integrity_failure_reason(result)
+        == "CLAIM_GROUNDING_NOT_EVALUATED"
+    )
 
 
 def test_gateway_rejects_citation_telemetry_that_does_not_match_answer():

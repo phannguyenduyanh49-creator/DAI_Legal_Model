@@ -7,7 +7,7 @@ async def post_model_generation(
     prompt: str,
     request_id: str,
     citation_attempt: int,
-    max_new_tokens: int = 768,
+    max_new_tokens: int = 256,
     timeout_seconds: float = 180.0,
 ) -> httpx.Response:
     """Send the assembled prompt unchanged using the Model API contract."""
