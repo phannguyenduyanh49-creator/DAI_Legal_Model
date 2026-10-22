@@ -1,0 +1,43 @@
+[
+  {
+    "query_id": "GOLDEN_001",
+    "query": "Thời hạn giải quyết thủ tục cấp giấy phép xây dựng nhà ở riêng lẻ là bao nhiêu ngày?",
+    "system_answer": "Mô phỏng câu trả lời hệ thống.",
+    "cited_ids": [
+      "doc_luat_xay_dung_2014_d102_k1_b"
+    ],
+    "expected_keypoints": [
+      "Không quá 15 ngày đối với nhà ở riêng lẻ tại đô thị",
+      "Không quá 10 ngày làm việc đối với nhà ở riêng lẻ nông thôn",
+      "Tính từ ngày nhận đủ hồ sơ hợp lệ theo quy định"
+    ],
+    "semantic_pass": null
+  },
+  {
+    "query_id": "GOLDEN_002",
+    "query": "Hồ sơ xin cấp Giấy chứng nhận quyền sử dụng đất lần đầu gồm những giấy tờ gì?",
+    "system_answer": "Mô phỏng câu trả lời hệ thống.",
+    "cited_ids": [
+      "doc_nd_101_2024_d28_k1",
+      "doc_luat_dat_dai_2024_d137"
+    ],
+    "expected_keypoints": [
+      "Đơn đăng ký đất đai, tài sản gắn liền với đất theo Mẫu số 01",
+      "Một trong các giấy tờ về quyền sử dụng đất quy định tại Điều 137 Luật Đất đai",
+      "Chứng từ thực hiện nghĩa vụ tài chính hoặc giấy tờ miễn/giảm (nếu có)"
+    ],
+    "semantic_pass": null
+  },
+  {
+    "query_id": "GOLDEN_003",
+    "query": "Người lao động đơn phương chấm dứt hợp đồng lao động không xác định thời hạn phải báo trước bao nhiêu ngày?",
+    "system_answer": "Mô phỏng câu trả lời hệ thống.",
+    "cited_ids": [
+      "doc_bo_luat_lao_dong_2019_d35_k1_a"
+    ],
+    "expected_keypoints": [
+      "Ít nhất 45 ngày nếu làm việc theo hợp đồng lao động không xác định thời hạn"
+    ],
+    "semantic_pass": null
+  }
+]
