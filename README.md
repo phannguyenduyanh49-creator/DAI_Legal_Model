@@ -1,808 +1,189 @@
 # DAI-Legal-Model
 
-> **AI Legal Assistant for Vietnamese administrative procedures**  
-> Qwen2.5-7B-Instruct + LoRA V3 + BGE-M3 RAG + Qdrant + Reranker + MCP/DVC + FastAPI + React/Vite
+Vietnamese legal-assistance research prototype combining a React/Vite frontend, FastAPI services, retrieval-augmented generation (RAG), a Qwen2.5-7B-Instruct model with a LoRA adapter, and evidence/citation verification.
 
-## 📌 Overview
+> **Scope:** The project focuses on Vietnamese legal and administrative-procedure questions. It is an academic prototype, not a substitute for professional legal advice.
 
-DAI-Legal-Model is an academic/research prototype for a Vietnamese legal assistant. The system combines a domain-adapted Large Language Model (LLM) with Retrieval-Augmented Generation (RAG), semantic reranking, and permission-controlled external retrieval so that answers can be grounded in Vietnamese administrative-procedure data.
+## Overview
 
-The project currently supports:
+- **Frontend:** React 19, Vite, Lucide React.
+- **Core Gateway:** FastAPI service for legal-query requests, routing/planning, diagnostics, and response status.
+- **Legacy/Core API:** FastAPI pipeline for catalog/RAG retrieval, evidence construction, prompt assembly, model calls, and verification.
+- **Model API:** Qwen2.5-7B-Instruct with a locally available LoRA adapter.
+- **Retrieval:** Catalog and RAG components, with Qdrant/embedding/reranking dependencies where configured.
+- **Evidence controls:** Evidence bundles, explicit citations, and verifier checks are used to reduce unsupported answers.
+- **External retrieval:** Requests to external sources must follow the application's permission policy.
 
-- Vietnamese legal-domain question answering
-- LoRA/QLoRA fine-tuning of Qwen2.5-7B-Instruct
-- Semantic legal-document retrieval with Qdrant
-- MCP tools for legal procedure search and DVC external retrieval
-- Permission-gated fallback from Local RAG to external DVC retrieval
-- Auto Fine-Tuning pipeline with validation, QLoRA training, evaluation, and adapter activation/rollback
-- FastAPI Core API and Model API
-- React/Vite web frontend
-- Public Internet access through Cloudflare Tunnel
-- Deployment on a local RTX 4070 12GB machine
-
----
-
-## 🏗️ System Architecture
+## Architecture
 
 ```text
-USER
-  ↓
-FRONTEND (React / Vite)
-  ↓
-CORE API :8000
-  ↓
-ORCHESTRATOR
-  ↓
-SYNONYM MAPPING
-  ↓
-BGE-M3
-  ↓
-QUERY EMBEDDING
-  ↓
-QDRANT
-  ↓
-TOP-K
-  ↓
-BGE RERANKER
-  ↓
-ENOUGH DATA?
-  ├── YES
-  │    ↓
-  │  LEGAL CONTEXT
-  │    ↓
-  │  QWEN2.5-7B + LORA V3
-  │    ↓
-  │  ANSWER
-  │
-  └── NO
-       ↓
-    ASK USER
-       ↓
-    USER ALLOW?
-       ↓ YES
-      MCP
-       ↓
-     DVC API
-       ↓
-   LEGAL CONTEXT
-       ↓
-  QWEN2.5-7B + LORA V3
-       ↓
-     ANSWER
+Browser (React/Vite)
+        |
+        v
+Core Gateway :8002
+        |
+        v
+Legacy/Core API :8000 ----> Catalog / RAG / Evidence Builder
+        |                              |
+        |                              v
+        |                       Prompt Assembly
+        |                              |
+        v                              v
+Diagnostics / Response <-------- Model API :8001
+                                       |
+                                       v
+                              Qwen2.5-7B + LoRA
+                                       |
+                                       v
+                             Answer / Citation Verifier
 ```
 
-### Core principle
+The frontend sends `POST /api/v2/legal-query` to the Gateway. On localhost, the default Gateway URL is `http://127.0.0.1:8002`. A successful HTTP response may still carry `status: "FAILED"`; clients should inspect the response body instead of relying only on the HTTP status.
 
-**Local RAG is the primary retrieval path.** BGE-M3 converts the user query into an embedding, Qdrant retrieves candidate procedures, and BGE Reranker filters/reorders the candidates before the system decides whether the local evidence is sufficient.
-
-**MCP is a fallback mechanism**, not the first retrieval path. When local evidence is insufficient, the system asks the user for permission before accessing the whitelisted DVC source.
-
-**LoRA** adapts the model's legal-domain response behavior, while **RAG** supplies factual context for administrative-procedure questions.
-
-## 🤖 Model
-
-| Component | Configuration |
-|---|---|
-| Base model | `Qwen/Qwen2.5-7B-Instruct` |
-| Fine-tuning | QLoRA / LoRA / PEFT |
-| Adapter | `outputs/qwen-legal-lora-v3` |
-| Quantization | 4-bit NF4 |
-| Compute dtype | BF16 |
-| GPU tested | NVIDIA RTX 4070 12GB |
-| Training dataset | `duyet/vietnamese-legal-instruct` |
-
-### V3 training
-
-The V3 adapter was trained with:
-
-- 4-bit NF4 quantization
-- LoRA adapters
-- BF16
-- Gradient checkpointing
-- Gradient accumulation
-- Paged AdamW 8-bit optimizer
-- Maximum sequence length: 2048
-- Training data prepared under `data/legal_train_v3/`
-
-Train with:
-
-```powershell
-python train_v3.py
-```
-
-The resulting adapter is saved to:
+## Repository layout
 
 ```text
-outputs/qwen-legal-lora-v3/
-```
-
-Model checkpoints are intentionally excluded from Git because of their size.
-
----
-
-## 📚 Datasets
-
-### 1. Vietnamese Legal Instruction Dataset
-
-```text
-duyet/vietnamese-legal-instruct
-```
-
-Used primarily for legal-domain instruction fine-tuning.
-
-### 2. National Public Service Portal Procedure Dataset
-
-```text
-tmquan/dichvucong-gov-vn
-```
-
-Used as the main RAG knowledge source for Vietnamese administrative procedures from the National Public Service Portal.
-
-Local path:
-
-```text
-data/dichvucong_procedures/
-```
-
-### 3. Prepared V3 dataset
-
-```text
-data/legal_train_v3/
-```
-
-This is the processed dataset used by `train_v3.py`.
-
-Large dataset files are stored in the repository using **Git LFS**.
-
----
-
-## 🔎 RAG Pipeline
-
-```text
-User Question
-     │
-     ▼
-Core API :8000
-     │
-     ▼
-MCP search_legal_documents
-     │
-     ▼
-Qdrant / legal_docs
-     │
-     ▼
-Relevant legal procedure
-     │
-     ▼
-Prompt + retrieved context
-     │
-     ▼
-Model API :8001
-     │
-     ▼
-Qwen2.5-7B-Instruct + LoRA V3
-     │
-     ▼
-Generated Answer
-```
-
-The current Core API limits and reranks the retrieved context before sending it to the model to reduce irrelevant context, hallucination risk, inference latency, and request timeouts.
-
----
-
-## 🔌 MCP & External Data Retrieval
-
-MCP is used as the **external retrieval layer** when the Local RAG knowledge base does not contain enough reliable information to answer the user's question.
-
-MCP server:
-
-```text
-mcp_server.py
-```
-
-### MCP tools
-
-Available tools include:
-
-- `search_legal_documents`
-- `search_procedure`
-
-The Core API starts the MCP server as a subprocess, so a separate MCP terminal is normally **not required** for the full application.
-
-### 🌐 External Data Source — Dịch vụ công Quốc gia
-
-The external retrieval layer connects to the **National Public Service Portal (Dịch vụ công Quốc gia — DVC)** for Vietnamese administrative-procedure information.
-
-The DVC source is used to retrieve procedure information such as:
-
-- Procedure name and identification
-- Required documents
-- Processing information
-- Fees / charges when available
-- Other available administrative-procedure details
-
-The MCP server uses a whitelist for the external host:
-
-```text
-dichvucong.gov.vn
-```
-
-The main external DVC endpoints used by the project are:
-
-```text
-/api/v1/submitting/formality-top-search/list-by-citizen
-/api/v1/configuring/formality/get-formality-by-citizen
-```
-
-### 🔄 External Retrieval Flow
-
-External retrieval is **not the first retrieval path**. The system follows a Local-first strategy:
-
-```text
-User Question
-      ↓
-Synonym Mapping
-      ↓
-BGE-M3
-      ↓
-Qdrant
-      ↓
-Top-K
-      ↓
-BGE Reranker
-      ↓
-Enough Local Data?
-   ├── YES
-   │    ↓
-   │  Local Legal Context
-   │    ↓
-   │  Qwen2.5-7B + LoRA V3
-   │    ↓
-   │  Answer
-   │
-   └── NO
-        ↓
-    Ask User Permission
-        ↓
-     User allows?
-        ↓ YES
-       MCP
-        ↓
-     DVC API
-        ↓
-   External Legal Context
-        ↓
-   Qwen2.5-7B + LoRA V3
-        ↓
-      Answer
-```
-
-### 🔐 Permission & Safety
-
-When Local RAG is insufficient, the system asks the user for permission before accessing external data.
-
-```text
-Local RAG insufficient
-        ↓
-Ask: Allow external retrieval?
-        ↓
-   ┌────┴────┐
-   │         │
-  YES        NO
-   │         │
-   ↓         ↓
- MCP       Stop external
-   │       retrieval
-   ↓
- DVC API
-```
-
-The MCP server does not provide unrestricted web/Google search. External retrieval is restricted to the configured DVC source.
-
-### MCP standalone test
-
-```powershell
-python mcp_server.py
-```
-
----
-
-## 🗄️ Qdrant
-
-Qdrant is used as the local vector database for the Local RAG pipeline.
-
-Default address:
-
-```text
-http://localhost:6333
-```
-
-Current collection:
-
-```text
-legal_docs_bge_m3
-```
-
-Embedding model:
-
-```text
-BAAI/bge-m3
-```
-
-Vector size:
-
-```text
-1024
-```
-
-Distance:
-
-```text
-COSINE
-```
-
-The current DVC import workflow uses:
-
-```powershell
-python backend/import_dvc_to_qdrant.py
-```
-
-The system uses Qdrant as the primary local knowledge base before considering external MCP retrieval.
-
-## 🌐 Web Frontend
-
-Frontend technology:
-
-- React
-- Vite
-- Tailwind CSS
-- Lucide React
-
-Local development server:
-
-```text
-http://localhost:5173
-```
-
-The browser tab is configured as:
-
-```text
-AI Pháp Lý
-```
-
-The frontend communicates with the Core API through the `/api/v1/chat/completions` endpoint using streaming responses.
-
----
-
-## 🌍 Internet Deployment
-
-The application has been exposed to the Internet using **Cloudflare Tunnel** while keeping the model running on the local RTX 4070 machine.
-
-Current routing:
-
-```text
-legal.donghai.uk
-        │
-        ▼
-localhost:5173
-Frontend
-```
-
-```text
-api.donghai.uk
-        │
-        ▼
-localhost:8000
-Core API
-```
-
-The Cloudflare agent is installed as a Windows Service.
-
-Verified deployment flow:
-
-```text
-Other Device
-     │
-     ▼
-Internet
-     │
-     ▼
-Cloudflare Tunnel
-     │
-     ├── Frontend :5173
-     │
-     └── Core API :8000
-              │
-              ▼
-         MCP + Qdrant
-              │
-              ▼
-       Model API :8001
-              │
-              ▼
-     Qwen2.5-7B + LoRA V3
-```
-
-The system has been tested from another device through the public domain.
-
-> The local PC must remain powered on and connected to the Internet for the public demo to remain available.
-
----
-
-## 📂 Project Structure
-
-```text
-DAI-Legal-Model/
-│
+.
+├── FE/                         # React/Vite frontend and Node tests
 ├── backend/
-│   ├── main.py
-│   └── import_dvc_to_qdrant.py
-│
-├── FE/
-│   └── src/
-│       ├── App.jsx
-│       └── api.js
-│
-├── auto_finetune/
-│   ├── auto_activation.py
-│   ├── auto_evaluator.py
-│   ├── auto_trainer.py
-│   ├── dataset_formatter.py
-│   ├── dataset_manager.py
-│   ├── dataset_validator.py
-│   ├── run_auto.py
-│   └── datasets/
-│       └── current/
-│
-├── mcp_server.py
-├── model_api.py
-├── run_test_cases.py
-├── test_reranker.py
-├── requirements.txt
-├── .gitignore
+│   ├── answer/                  # Citation formatting, model client, diagnostics
+│   ├── catalog/                 # Catalog lookup and service logic
+│   ├── rag/                     # Retrieval policy and data sufficiency
+│   ├── verifier/                # Answer/evidence verification
+│   ├── core_gateway.py          # Gateway API (port 8002)
+│   ├── main.py                  # Legacy/Core API (port 8000)
+│   └── model_api.py             # Model inference API (port 8001)
+├── data/                        # Project datasets and local data
+├── gateway_openapi.json         # Gateway OpenAPI specification
+├── run_gateway_stack.py         # Starts the three Python services
+├── model_api.py                 # Legacy model API entry point
 └── README.md
 ```
 
-Large datasets, model checkpoints, local databases, and runtime-generated files should not be committed to the repository unless they are intentionally managed through Git LFS or another artifact-storage mechanism.
+## Requirements
 
-## 🔌 API Endpoints
+- Windows PowerShell or another supported Python/Node environment.
+- Python dependencies listed in `requirements.txt`.
+- Node.js and npm for the frontend.
+- Model weights/LoRA adapter and any required retrieval services/data must be available locally or configured for your environment.
+- If using Qdrant, make sure its service and collection are configured before running queries.
 
-| Service | Endpoint | Port | Purpose |
-|---|---|---:|---|
-| Core API | `/api/v1/chat/completions` | 8000 | Chat request and answer generation |
-| Core API | `/api/v1/chat/history` | 8000 | Retrieve conversation/session history |
-| Model API | `/generate` | 8001 | Qwen2.5-7B + LoRA inference |
-| Qdrant | `/collections` | 6333 | Vector database status and collections |
+Do not commit API keys, passwords, personal data, local chat history, virtual environments, generated build output, or model checkpoints. Confirm that datasets may be redistributed before publishing them.
 
-The normal application flow is:
+## Setup (Windows / PowerShell)
 
-```text
-Frontend → Core API → Local RAG
-                     ↓
-                MCP if allowed
-                     ↓
-                 Model API
-```
+### 1. Create and activate a Python environment
 
-## ⚙️ Installation
-
-### 1. Clone repository
-
-```powershell
-git clone https://github.com/AnNguyen0806/DAI-Legal-Model.git
-cd DAI-Legal-Model
-```
-
-### 2. Git LFS
-
-Install Git LFS and initialize it:
-
-```powershell
-git lfs install
-git lfs pull
-```
-
-The repository contains several GB of dataset files, so sufficient disk space and Git LFS quota are required.
-
-### 3. Create Python environment
-
-Windows:
+Run these commands from the repository root:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scriptsctivate
-```
-
-### 4. Install dependencies
-
-```powershell
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
----
+If PowerShell blocks activation, you can call the environment's Python directly, for example `.\.venv\Scripts\python.exe -m pytest`.
 
-## 📥 Dataset Preparation
-
-Download the DVC procedure dataset:
+### 2. Install frontend dependencies
 
 ```powershell
-python download_dvc_dataset.py
+cd FE
+npm install
 ```
 
-Download the legal instruction dataset:
+### 3. Configure local paths and services
+
+Before starting the backend, check the model-adapter path and project/data paths in the backend configuration. Some current settings use Windows absolute paths and need to be adjusted for your machine. Do not put secrets in tracked files; use local environment variables or an ignored `.env` file where supported.
+
+The frontend can be configured with `VITE_GATEWAY_API_URL` in `FE/.env`:
+
+```dotenv
+VITE_GATEWAY_API_URL=http://127.0.0.1:8002
+```
+
+For localhost, the frontend defaults to this Gateway URL if the variable is not set.
+
+## Run the system
+
+From the repository root, with Python dependencies, model files, and retrieval services configured:
 
 ```powershell
-python download_legal_dataset.py
+python run_gateway_stack.py
 ```
 
-Prepare the V3 training data:
+This script starts:
+
+| Service | Default port | Purpose |
+|---|---:|---|
+| Legacy/Core API | 8000 | Retrieval/evidence pipeline and model orchestration |
+| Model API | 8001 | Local model inference |
+| Core Gateway | 8002 | Frontend-facing legal-query API |
+
+Keep this terminal open while testing. Press `Ctrl+C` to stop the services started by the script.
+
+In a separate terminal, start the frontend:
 
 ```powershell
-python prepare_legal_dataset.py
-```
-
-Inspect the prepared dataset:
-
-```powershell
-python check_dataset.py
-```
-
----
-
-## ▶️ Running the Full System
-
-The application uses three main services.
-
-### 1. Model API
-
-```powershell
-cd D:\DAI-Legal-Model
-.\.venv\Scriptsctivate
-python model_api.py
-```
-
-Model API:
-
-```text
-http://localhost:8001
-```
-
-### 2. Core API
-
-Open another terminal:
-
-```powershell
-cd D:\DAI-Legal-Model
-.\.venv\Scriptsctivate
-python backend\main.py
-```
-
-Core API:
-
-```text
-http://localhost:8000
-```
-
-### 3. Frontend
-
-Open another terminal:
-
-```powershell
-cd D:\DAI-Legal-Model\FE
+cd FE
 npm run dev
 ```
 
-Frontend:
+Open the local URL printed by Vite (typically `http://localhost:5173`).
 
-```text
-http://localhost:5173
+## API endpoints
+
+| Service | Method | Path | Purpose |
+|---|---|---|---|
+| Core Gateway (:8002) | GET | `/health` | Gateway health check |
+| Core Gateway (:8002) | POST | `/api/v2/legal-query` | Submit a legal query |
+| Legacy/Core API (:8000) | API routes | See `backend/main.py` | Retrieval and answer pipeline |
+| Model API (:8001) | POST | `/generate` | Generate a model response |
+
+The Gateway request body currently accepts a query and an `allow_external` permission flag, for example:
+
+```json
+{
+  "query": "Thủ tục đăng ký tạm trú cần giấy tờ gì?",
+  "allow_external": false
+}
 ```
 
-MCP is automatically launched by the Core API during normal operation.
+For the exact schemas and response fields, use `gateway_openapi.json` or the running service's OpenAPI docs.
 
----
+## Tests and production build
 
-## 🎬 Demo Test Cases
-
-Recommended scenarios for the academic demonstration:
-
-1. **Local RAG** — `Đăng ký tạm trú cần những giấy tờ gì?`
-2. **Synonym Mapping** — `ĐKKH cần những giấy tờ gì?`
-3. **Insufficient Local Data** — ask a procedure that is not sufficiently covered by the local knowledge base.
-4. **Permission + MCP** — when Local RAG is insufficient, demonstrate the user permission step before external retrieval.
-5. **DVC procedure/fee query** — demonstrate retrieval from the DVC source after permission.
-6. **Session History** — create a conversation, reload/request history, and continue the same session.
-7. **Multi-session** — use different session IDs to demonstrate separated conversation contexts.
-8. **Auto Fine-Tuning** — demonstrate the dataset → training → evaluation → activation/rollback pipeline.
-
-## 🧪 Testing
-
-### Test the trained model
+Run backend tests from the repository root:
 
 ```powershell
-python test_trained_v3.py
+python -m pytest backend/tests -q
 ```
 
-### Test the MCP server
+Run frontend tests and build:
 
 ```powershell
-python mcp_server.py
+cd FE
+npm test
+npm run build
 ```
 
-### Recommended RAG questions
-
-Examples:
-
-```text
-Thủ tục đăng ký tạm trú cần những giấy tờ gì?
-
-Đăng ký kết hôn mất bao lâu?
-
-Chứng thực chữ ký mất bao lâu?
-
-Lệ phí đăng ký tạm trú là bao nhiêu?
-
-Đăng ký tạm trú thực hiện ở đâu?
-```
-
-When evaluating the system, pay attention to:
-
-- Retrieval relevance
-- Exact procedure matching
-- Factual grounding
-- Hallucination
-- Answer completeness
-- Response latency
-
----
-
-## 👥 Multi-user & Session History
-
-The application supports multiple independent chat sessions through `session_id`.
-
-### Session flow
-
-```text
-User
-  ↓
-Frontend
-  ↓
-session_id
-  ↓
-Core API
-  ↓
-Session / Conversation History
-  ↓
-RAG + MCP + Model
-  ↓
-Answer
-```
-
-### Multi-user behavior
-
-- Each conversation is associated with a `session_id`.
-- Different sessions keep their conversation context separate.
-- The frontend sends the session identifier with chat requests.
-- The Core API uses the session identifier when handling conversation history.
-- The architecture can serve multiple users/sessions without loading a separate Qwen model for every request.
-
-### Conversation History
-
-The frontend can request conversation history through:
-
-```text
-GET /api/v1/chat/history
-```
-
-Chat requests use:
-
-```text
-POST /api/v1/chat/completions
-```
-
-The session/history mechanism allows a user to continue a previous conversation while keeping different sessions logically separated.
-
-## 🔄 Auto Fine-Tuning
-
-The project includes an automated fine-tuning pipeline under `auto_finetune/`:
-
-```text
-Dataset
-  ↓
-Validation
-  ↓
-Formatting
-  ↓
-QLoRA Training
-  ↓
-Evaluation
-  ↓
-Activation / Rollback
-```
-
-A new dataset can be placed into the current dataset directory and processed by `run_auto.py`. The candidate adapter is activated only when evaluation passes; otherwise the previously active adapter is retained.
-
-Run:
+The frontend tests use Node's built-in test runner. If Vite cannot clean an existing `dist` directory on Windows due to a file lock or permissions, stop the frontend dev server and try a separate output directory:
 
 ```powershell
-python auto_finetune/run_auto.py
+npm run build -- --outDir build-check
 ```
 
-## 🔄 Current Development Status
+Generated directories such as `FE/dist/` and `FE/build-check/` should not be committed.
 
-### Completed
+## Data and model artifacts
 
-- [x] Qwen2.5-7B-Instruct inference
-- [x] LoRA V3 fine-tuning
-- [x] Auto Fine-Tuning pipeline
-- [x] Vietnamese legal instruction dataset preparation
-- [x] DVC procedure dataset integration
-- [x] Qdrant vector database
-- [x] BGE-M3 RAG retrieval pipeline
-- [x] BGE Reranker
-- [x] MCP legal search tools
-- [x] Permission-controlled external retrieval
-- [x] FastAPI Core API
-- [x] FastAPI Model API
-- [x] React/Vite frontend
-- [x] Streaming AI responses
-- [x] Frontend UI update
-- [x] Session-based conversation history
-- [x] Multi-session architecture
-- [x] Git LFS dataset storage
-- [x] Cloudflare Tunnel deployment
-- [x] Public Internet testing from another device
+Datasets, vector indexes, model weights, and LoRA adapters may be large or subject to redistribution restrictions. Keep local-only artifacts out of Git unless the team has confirmed permission and intentionally selected a storage method such as Git LFS. The application will not run end-to-end until the required model files, data, and dependent services are configured.
 
-### Next steps
+## Limitations and disclaimer
 
-- [ ] Add deterministic legal source references to generated answers
-- [ ] Run a larger legal-question evaluation set
-- [ ] Record retrieval and answer-quality results
-- [ ] Create `start.bat` for one-click startup
-- [ ] Revisit Docker packaging after native demo is stable
-- [ ] Capture screenshots for the academic report
-- [ ] Prepare presentation slides and demo script
+- Answer quality depends on retrieval coverage, evidence quality, and model behavior.
+- A verifier can catch some citation/evidence problems but cannot guarantee legal correctness.
+- External sources may change, be unavailable, or return incomplete information.
+- Users should verify important procedures, fees, deadlines, and legal requirements against current official sources.
 
----
-
-## ⚠️ Limitations
-
-- Retrieval quality depends on the quality and coverage of the local legal dataset.
-- External DVC search may return noisy or partially mismatched procedures, so procedure matching remains an important limitation.
-- The multi-stage pipeline can increase response latency compared with direct LLM inference.
-- RAG reduces hallucination risk but cannot guarantee that generated answers are always correct.
-- The current knowledge scope focuses strongly on Vietnamese administrative procedures and does not represent the complete body of Vietnamese law.
-- External retrieval depends on the availability and response quality of the DVC source.
-
-## ⚠️ Disclaimer
-
-This project is an **academic/research prototype** and is not a substitute for professional legal advice.
-
-Legal procedures, fees, required documents, processing times, and regulations may change. Users should verify important information against current official sources before taking legal or administrative action.
-
----
-
-## 👨‍💻 Project
-
-**DAI-Legal-Model**
-
-Vietnamese Legal AI Assistant using:
-
-```text
-Qwen2.5-7B-Instruct
-        +
-LoRA / QLoRA
-        +
-RAG
-        +
-Qdrant
-        +
-MCP
-        +
-FastAPI
-        +
-React / Vite
-        +
-Cloudflare Tunnel
-```
+This repository is intended for academic and research use only.
