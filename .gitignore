@@ -37,3 +37,11 @@ Thumbs.db
 data/chat_history.db
 backend.zip
 backend/core_gateway.zip
+
+# Test caches
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/FE/build-check/
+/FE/dist/

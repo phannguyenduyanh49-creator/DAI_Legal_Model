@@ -71,9 +71,18 @@ class QueryAnalysisService:
 
         return list(dict.fromkeys(expanded))
 
-    def generate_hypothetical_document(self, query: str, citations: List[str]) -> str:
+    def generate_hypothetical_document(
+        self,
+        query: str,
+        citations: List[str],
+        request_id: str = "not_provided",
+    ) -> str:
         """Thực hiện kỹ thuật HyDE: Sinh văn bản phản hồi giả định."""
-        logger.info(f"[HyDE Engine] Đang tổng hợp tài liệu giả định cho truy vấn: '{query[:50]}...'")
+        logger.info(
+            "[PIPELINE STAGE] request_id=%s stage=hyde status=started query_chars=%d",
+            request_id,
+            len(query),
+        )
 
         citation_context = f" Căn cứ vào các quy định tại {', '.join(citations)}." if citations else ""
 
@@ -86,7 +95,12 @@ class QueryAnalysisService:
         )
         return hypothetical_doc
 
-    def analyze(self, query: str, enable_hyde: bool = True) -> AnalysisResult:
+    def analyze(
+        self,
+        query: str,
+        enable_hyde: bool = True,
+        request_id: str = "not_provided",
+    ) -> AnalysisResult:
         """Hàm thực thi tổng thể chuỗi quy trình phân tích và làm sạch câu truy vấn."""
         cleaned_q = self.clean_text(query)
         extracted_cites = self.extract_legal_citations(cleaned_q)
@@ -94,7 +108,11 @@ class QueryAnalysisService:
 
         hypo_doc = None
         if enable_hyde:
-            hypo_doc = self.generate_hypothetical_document(cleaned_q, extracted_cites)
+            hypo_doc = self.generate_hypothetical_document(
+                cleaned_q,
+                extracted_cites,
+                request_id=request_id,
+            )
 
         base_confidence = 0.60
         bonus = min(0.35, (len(expanded_terms) * 0.03) + (len(extracted_cites) * 0.10))

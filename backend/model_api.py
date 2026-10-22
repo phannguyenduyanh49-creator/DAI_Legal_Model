@@ -1,10 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 import torch
 import uvicorn
-
+import time
+import hashlib
 
 # ============================================================
 # CONFIG
@@ -101,9 +102,36 @@ def root():
 # ============================================================
 
 @app.post("/generate")
-def generate(request: GenerateRequest):
-
+def generate(
+    request: GenerateRequest,
+    request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    citation_attempt: int | None = Header(
+        default=None, alias="X-Citation-Attempt"
+    ),
+):
+    started_at = time.perf_counter()
     prompt = request.prompt
+
+    if not prompt.strip():
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail="prompt không được để trống"
+        )
+
+    # Chỉ log metadata, không in toàn bộ nội dung pháp lý của người dùng.
+    has_evidence_section = "=== EVIDENCE ===" in prompt
+    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+    print(
+        "[MODEL API] request received:",
+        f"request_id={request_id or 'not_provided'}",
+        f"citation_attempt={citation_attempt or 'not_provided'}",
+        f"prompt_chars={len(prompt)}",
+        f"prompt_sha256={prompt_sha256}",
+        f"has_evidence_section={has_evidence_section}",
+        flush=True,
+    )
 
     messages = [
         {
@@ -112,39 +140,85 @@ def generate(request: GenerateRequest):
         }
     ]
 
-    text = tokenizer.apply_chat_template(
+    formatted_prompt = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True
     )
 
     inputs = tokenizer(
-        text,
-        return_tensors="pt"
+        formatted_prompt,
+        return_tensors="pt",
+        truncation=False,
     ).to(model.device)
 
-    with torch.no_grad():
+    input_token_count = int(inputs["input_ids"].shape[1])
+    formatted_prompt_sha256 = hashlib.sha256(
+        formatted_prompt.encode("utf-8")
+    ).hexdigest()
+    print(
+        "[MODEL API] chat_template applied:",
+        f"formatted_prompt_chars={len(formatted_prompt)}",
+        f"formatted_prompt_sha256={formatted_prompt_sha256}",
+        f"input_tokens={input_token_count}",
+        flush=True,
+    )
 
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=request.max_new_tokens,
-            do_sample=False,
-            temperature=0.1,
-            repetition_penalty=1.1,
-            pad_token_id=tokenizer.eos_token_id
+    generation_started_at = time.perf_counter()
+    try:
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=request.max_new_tokens,
+                do_sample=False,
+                repetition_penalty=1.1,
+                pad_token_id=tokenizer.eos_token_id
+            )
+    except Exception as exc:
+        print(
+            "[MODEL API] generation failed:",
+            f"request_id={request_id or 'not_provided'}",
+            f"citation_attempt={citation_attempt or 'not_provided'}",
+            f"exception_type={type(exc).__name__}",
+            f"elapsed_ms={round((time.perf_counter() - generation_started_at) * 1000, 2)}",
+            flush=True,
         )
+        raise
 
-    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    generated_tokens = outputs[0][input_token_count:]
 
     answer = tokenizer.decode(
         generated_tokens,
         skip_special_tokens=True
     ).strip()
 
+    processing_time_ms = round(
+        (time.perf_counter() - started_at) * 1000,
+        2
+    )
+
+    output_token_count = int(generated_tokens.shape[0])
+
+    print(
+        "[MODEL API] generation complete:",
+        f"request_id={request_id or 'not_provided'}",
+        f"citation_attempt={citation_attempt or 'not_provided'}",
+        f"input_tokens={input_token_count}",
+        f"output_tokens={output_token_count}",
+        f"processing_time_ms={processing_time_ms}",
+        flush=True,
+    )
+
     return {
         "success": True,
-        "answer": answer
+        "answer": answer,
+        "processing_time_ms": processing_time_ms,
+        "input_tokens": input_token_count,
+        "output_tokens": output_token_count,
+        "prompt_chars": len(prompt),
+        "evidence_section_detected": has_evidence_section,
     }
+
 
 
 # ============================================================

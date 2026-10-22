@@ -24,10 +24,14 @@ class PromptAssembler:
             "Không tự suy đoán thông tin không có trong Evidence."
         )
 
+        included_evidences = self.included_evidences(evidence_bundle)
+        system_part += (
+            " Cite every legal factual claim with the exact Evidence ID immediately after it. "
+            "Use only IDs shown in the Evidence section. Never invent a law, source, or ID."
+        )
         evidence_context = self._build_evidence_context(
             evidence_bundle
         )
-
 
         prompt = (
             f"{system_part}\n\n"
@@ -52,7 +56,35 @@ class PromptAssembler:
             "Trình bày câu trả lời rõ ràng theo các mục phù hợp với câu hỏi.\n"
         )
 
-        return prompt
+        allowed_ids = ", ".join(
+            item.evidence_id for item in included_evidences
+        ) or "none"
+        return (
+            prompt
+            + "\n=== REQUIRED CITATION FORMAT ===\n"
+            + "Cite each legal factual sentence immediately with "
+            + "[Evidence ID: <exact allowed ID>].\n"
+            + "Use one claim per bullet. Do not cite headings. Do not invent laws, sources, or IDs.\n"
+            + f"Allowed Evidence IDs: {allowed_ids}\n"
+        )
+
+    def included_evidences(self, evidence_bundle: EvidenceBundle):
+        """Return exactly the evidence sections that fit in the assembled prompt."""
+        selected = []
+        total_chars = 0
+        for evidence in evidence_bundle.evidences:
+            section = (
+                f"[Evidence ID: {evidence.evidence_id}]\n"
+                f"Source: {evidence.source_type}\n"
+                f"Title: {evidence.title or ''}\n"
+                f"Score: {evidence.score}\n"
+                f"Content:\n{evidence.content}\n"
+            )
+            if total_chars + len(section) > self.max_evidence_chars:
+                break
+            selected.append(evidence)
+            total_chars += len(section)
+        return selected
 
     def _build_evidence_context(
         self,
@@ -63,10 +95,7 @@ class PromptAssembler:
             return "Không có Evidence phù hợp."
 
         sections = []
-        total_chars = 0
-
-        for evidence in evidence_bundle.evidences:
-
+        for evidence in self.included_evidences(evidence_bundle):
             section = (
                 f"[Evidence ID: {evidence.evidence_id}]\n"
                 f"Source: {evidence.source_type}\n"
@@ -75,13 +104,6 @@ class PromptAssembler:
                 f"Content:\n{evidence.content}\n"
             )
 
-            if (
-                total_chars + len(section)
-                > self.max_evidence_chars
-            ):
-                break
-
             sections.append(section)
-            total_chars += len(section)
 
         return "\n".join(sections)

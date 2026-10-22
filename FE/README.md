@@ -1,16 +1,27 @@
-# React + Vite
+# DAI-Legal-Model Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 and Vite frontend for the Core Gateway legal query API.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```powershell
+cd D:\Prj\DAI-Legal-Model\FE
+npm.cmd run dev
+```
 
-## React Compiler
+The Vite development server uses port `5173`. On localhost, the frontend calls the Gateway at `http://127.0.0.1:8002`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Configure a different Gateway base URL with `VITE_GATEWAY_API_URL` in an FE `.env` file:
 
-## Expanding the ESLint configuration
+```dotenv
+VITE_GATEWAY_API_URL=http://127.0.0.1:8002
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The frontend sends `POST /api/v2/legal-query` with `{ "query": "...", "allow_external": false }`. The Gateway response is JSON. A response with HTTP 200 can still have `status: "FAILED"`; the UI preserves and displays that status and the answer supplied by the Gateway. Chat messages are held only in the current browser UI session because the Gateway contract does not expose chat history.
+
+## Checks
+
+```powershell
+npm.cmd test
+npm.cmd run build
+```

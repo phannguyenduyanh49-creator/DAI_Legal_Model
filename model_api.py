@@ -296,7 +296,7 @@ app = FastAPI(
 
 class ChatRequest(BaseModel):
 
-    question: str
+    prompt: str
 
 
 # =========================================================
@@ -577,24 +577,49 @@ def root():
 # 16. GENERATE
 # =========================================================
 
-@app.post("/generate")
-def generate(
-    request: ChatRequest
-):
+def ask_model(prompt_text: str):
+    messages = [
+        {
+            "role": "user",
+            "content": prompt_text,
+        },
+    ]
 
-    answer = ask_model(
-        request.question
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
-    return {
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+    )
 
-        "success": True,
-
-        "answer": answer,
-
-        "adapter": LORA_MODEL,
-
+    inputs = {
+        key: value.to(model.device)
+        for key, value in inputs.items()
     }
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=384,
+            do_sample=False,
+            repetition_penalty=1.05,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    input_length = inputs["input_ids"].shape[1]
+    generated_tokens = outputs[0][input_length:]
+
+    answer = tokenizer.decode(
+        generated_tokens,
+        skip_special_tokens=True,
+    )
+
+    return answer.strip()
+
 
 
 # =========================================================

@@ -7,6 +7,7 @@ from backend.evidence.schemas import EvidenceBundle
 
 @dataclass
 class VerificationResult:
+    # `passed` means citation integrity passed; semantic entailment is not run.
     passed: bool
 
     errors: List[str] = field(
@@ -15,7 +16,11 @@ class VerificationResult:
 
     checked_claims: int = 0
 
-    supported_claims: int = 0
+    linked_claims: int = 0
+
+    semantic_support_evaluated: bool = False
+
+    claim_results: List[dict] = field(default_factory=list)
 
 
 class Verifier:
@@ -37,26 +42,43 @@ class Verifier:
             answer.claims
         )
 
-        supported_claims = 0
+        linked_claims = 0
+        claim_results = []
+
+        if checked_claims == 0:
+            errors.append("Answer contains no claims to validate.")
 
         for claim in answer.claims:
 
+            claim_errors = []
+
             if not claim.claim.strip():
-                errors.append(
-                    "Claim is empty."
-                )
+                message = "Claim is empty."
+                errors.append(message)
+                claim_errors.append(message)
+                claim_results.append({
+                    "claim": claim.claim,
+                    "evidence_ids": list(claim.evidence_ids),
+                    "passed": False,
+                    "reasons": claim_errors,
+                })
                 continue
 
             if not claim.evidence_ids:
 
-                errors.append(
-                    f"Claim has no evidence: "
-                    f"{claim.claim}"
-                )
+                message = f"Claim has no evidence: {claim.claim}"
+                errors.append(message)
+                claim_errors.append(message)
+                claim_results.append({
+                    "claim": claim.claim,
+                    "evidence_ids": list(claim.evidence_ids),
+                    "passed": False,
+                    "reasons": claim_errors,
+                })
 
                 continue
 
-            claim_supported = False
+            claim_linked = False
 
             for evidence_id in claim.evidence_ids:
 
@@ -66,42 +88,39 @@ class Verifier:
 
                 if evidence is None:
 
-                    errors.append(
-                        f"Evidence not found: "
-                        f"{evidence_id}"
-                    )
+                    message = f"Evidence not found: {evidence_id}"
+                    errors.append(message)
+                    claim_errors.append(message)
 
                     continue
 
                 if not evidence.content.strip():
 
-                    errors.append(
-                        f"Evidence has empty content: "
-                        f"{evidence_id}"
-                    )
+                    message = f"Evidence has empty content: {evidence_id}"
+                    errors.append(message)
+                    claim_errors.append(message)
 
                     continue
 
-                claim_supported = True
+                claim_linked = True
 
-            if claim_supported:
-                supported_claims += 1
+            if claim_linked:
+                linked_claims += 1
 
-            else:
-                errors.append(
-                    f"Claim is not supported: "
-                    f"{claim.claim}"
-                )
+            claim_results.append({
+                "claim": claim.claim,
+                "evidence_ids": list(claim.evidence_ids),
+                "passed": claim_linked and not claim_errors,
+                "reasons": claim_errors,
+            })
 
-        passed = (
-            len(errors) == 0
-            and checked_claims
-            == supported_claims
-        )
+        passed = len(errors) == 0 and checked_claims == linked_claims
 
         return VerificationResult(
             passed=passed,
             errors=errors,
             checked_claims=checked_claims,
-            supported_claims=supported_claims,
+            linked_claims=linked_claims,
+            semantic_support_evaluated=False,
+            claim_results=claim_results,
         )

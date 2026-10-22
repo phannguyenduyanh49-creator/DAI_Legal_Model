@@ -1,139 +1,75 @@
-const API_BASE =
-  window.location.hostname === "localhost" ||
-  window.location.hostname === "127.0.0.1"
-    ? "http://localhost:8000"
-    : "https://api.donghai.uk";
+const localHostnames = new Set(["localhost", "127.0.0.1"]);
+const configuredGatewayUrl = import.meta.env?.VITE_GATEWAY_API_URL;
+const defaultGatewayUrl =
+  typeof window !== "undefined" && localHostnames.has(window.location.hostname)
+    ? "http://127.0.0.1:8002"
+    : "";
 
-const API_URL = `${API_BASE}/api/v1/chat/completions`;
-const HISTORY_URL = `${API_BASE}/api/v1/chat/history`;
+export const API_BASE_URL = (configuredGatewayUrl || defaultGatewayUrl).replace(/\/$/, "");
+export const LEGAL_QUERY_URL = `${API_BASE_URL}/api/v2/legal-query`;
+export const GATEWAY_HEALTH_URL = `${API_BASE_URL}/health`;
 
-async function readError(response) {
-  try {
-    const data = await response.json();
-    return data.detail || data.message || response.statusText;
-  } catch {
-    return response.statusText;
+function assertGatewayConfigured(baseUrl) {
+  if (!baseUrl) {
+    throw new Error("Chưa cấu hình VITE_GATEWAY_API_URL cho môi trường này.");
   }
 }
 
-export async function askAI(prompt, allowExternal = false) {
-  const response = await fetch(API_URL, {
+async function responseError(response) {
+  const contentType = response.headers.get("content-type") || "";
+  const message = `Dịch vụ chưa thể xử lý yêu cầu (HTTP ${response.status}).`;
+  let data = {};
+
+  if (contentType.includes("application/json")) {
+    try {
+      data = await response.json();
+    } catch {
+      // Keep the generic HTTP error; do not expose arbitrary server details.
+    }
+  }
+
+  const error = new Error(message);
+  error.telemetry = {
+    request_id: response.headers.get("x-request-id") || data?.request_id,
+    failure_stage: response.headers.get("x-failure-stage") || data?.failure_stage,
+    failure_reason_code: response.headers.get("x-failure-reason-code") || data?.failure_reason_code,
+    exception_type: response.headers.get("x-exception-type") || data?.exception_type,
+    upstream_status_code: Number(response.headers.get("x-upstream-status-code")) || data?.upstream_status_code,
+  };
+  return error;
+}
+
+export async function getGatewayHealth({ baseUrl = API_BASE_URL } = {}) {
+  assertGatewayConfigured(baseUrl);
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`, { method: "GET" });
+  if (!response.ok) throw await responseError(response);
+  return response.json();
+}
+
+export async function askLegalQuery(query, { allowExternal = false, signal, baseUrl = API_BASE_URL } = {}) {
+  assertGatewayConfigured(baseUrl);
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/v2/legal-query`, {
     method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      prompt,
-      allow_external: Boolean(allowExternal),
-    }),
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, allow_external: Boolean(allowExternal) }),
   });
 
-  if (!response.ok) {
-    throw new Error(await readError(response));
+  if (!response.ok) throw await responseError(response);
+
+  const result = await response.json();
+  if (
+    !result
+    || typeof result !== "object"
+    || !["SUCCESS", "FAILED"].includes(result.status)
+    || !(typeof result.answer === "string" || result.answer === null)
+    || typeof result.processing_time_ms !== "number"
+    || !result.pipeline_execution
+    || typeof result.pipeline_execution !== "object"
+    || Array.isArray(result.pipeline_execution)
+  ) {
+    throw new Error("Gateway trả về dữ liệu không đúng định dạng.");
   }
 
-  if (!response.body) {
-    throw new Error("Core API không trả về response stream.");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-
-  let answer = "";
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
-
-    for (const event of events) {
-      const lines = event.split("\n");
-
-      for (const line of lines) {
-        if (!line.startsWith("data:")) {
-          continue;
-        }
-
-        const raw = line.slice(5).trim();
-
-        if (!raw) {
-          continue;
-        }
-
-        try {
-          const data = JSON.parse(raw);
-
-          if (typeof data.delta === "string") {
-            answer += data.delta;
-          }
-        } catch {
-          // Bỏ qua data SSE không phải JSON.
-        }
-      }
-    }
-  }
-
-  if (buffer.trim()) {
-    for (const line of buffer.split("\n")) {
-      if (!line.startsWith("data:")) {
-        continue;
-      }
-
-      const raw = line.slice(5).trim();
-
-      if (!raw) {
-        continue;
-      }
-
-      try {
-        const data = JSON.parse(raw);
-
-        if (typeof data.delta === "string") {
-          answer += data.delta;
-        }
-      } catch {
-        // Ignore malformed trailing SSE data.
-      }
-    }
-  }
-
-  return answer.trim();
-}
-
-export async function getChatHistory(limit = 100) {
-  const response = await fetch(
-    `${HISTORY_URL}?limit=${encodeURIComponent(limit)}`,
-    {
-      method: "GET",
-      credentials: "include",
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(await readError(response));
-  }
-
-  return await response.json();
-}
-
-export async function clearChatHistory() {
-  const response = await fetch(HISTORY_URL, {
-    method: "DELETE",
-    credentials: "include",
-  });
-
-  if (!response.ok) {
-    throw new Error(await readError(response));
-  }
-
-  return await response.json();
+  return result;
 }

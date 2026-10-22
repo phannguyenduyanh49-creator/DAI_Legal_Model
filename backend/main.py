@@ -22,13 +22,30 @@ from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import FlagReranker
 from backend.rag.adapter import rag_results_to_evidence
+from backend.rag.data_sufficiency import check_enough_data
+from backend.rag.pipeline_policy import (
+    build_catalog_fallback_after_retrieval_error,
+    choose_data_source,
+)
 from backend.evidence.builder import EvidenceBuilder
+from backend.evidence.schemas import EvidenceBundle
+from backend.answer.citations import structure_answer_with_explicit_evidence
+from backend.answer.citation_generation import generate_with_citation_retry
+from backend.answer.model_api_client import post_model_generation
+from backend.answer.diagnostics import (
+    classify_upstream_exception,
+    make_citation_attempt_logger,
+    verifier_reason_codes,
+)
+from backend.verifier.verifier import Verifier
 import httpx
 import json
 import asyncio
 import os
 import sys
 import re
+import time
+import hashlib
 import unicodedata
 import uuid
 import sqlite3
@@ -44,6 +61,27 @@ evidence_builder = EvidenceBuilder(
 prompt_assembler = PromptAssembler(
     max_evidence_chars=12000
 )
+verifier = Verifier()
+
+_LOG_TEXT_LIMIT = 2000
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)(?:bearer\s+)[A-Za-z0-9._~+/=-]+|"
+    r"(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[^\s,;]+|"
+    r"\bsk-[A-Za-z0-9_-]{12,}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
+)
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(?<!\w)(?:\+?84|0)(?:[ .()-]*\d){8,10}(?!\w)")
+
+
+def _safe_diagnostic_text(value: str, limit: int = _LOG_TEXT_LIMIT) -> str:
+    """Bound model text in logs and redact common secrets and contact details."""
+    sanitized = _SECRET_VALUE_RE.sub("[REDACTED_SECRET]", value)
+    sanitized = _EMAIL_RE.sub("[REDACTED_EMAIL]", sanitized)
+    sanitized = _PHONE_RE.sub("[REDACTED_PHONE]", sanitized)
+    if len(sanitized) > limit:
+        return sanitized[:limit] + "...[TRUNCATED]"
+    return sanitized
+
 # =========================================================
 # APP
 # =========================================================
@@ -565,7 +603,7 @@ def expand_synonyms_for_retrieval(text: str) -> str:
         )
 
     if expanded != original:
-        print("SYNONYM MAPPING:", original, "->", expanded)
+        print("[QUERY NORMALIZATION]", "input_chars=", len(original), "output_chars=", len(expanded))
 
     return expanded
 
@@ -670,8 +708,8 @@ def is_relevant_procedure(
     if procedure_normalized in question_normalized:
 
         print(
-            "RAG EXACT MATCH:",
-            procedure_name
+            "[RETRIEVAL MATCH]",
+            "match_type=exact",
         )
 
         return True
@@ -710,13 +748,10 @@ def is_relevant_procedure(
     )
 
     print(
-        "RAG RELEVANCE:",
-        procedure_name,
-        "| score=",
+        "[RETRIEVAL RELEVANCE]",
+        "score=",
         round(score, 4),
-        "| matched=",
-        matched,
-        "| overlap=",
+        "overlap=",
         round(overlap, 2)
     )
 
@@ -754,20 +789,22 @@ def is_relevant_procedure(
 
 async def rerank_local_results(
     question: str,
-    contexts: list[dict]
+    contexts: list[dict],
+    request_id: str = "unknown",
+    stage_state: dict | None = None,
 ):
 
     if not contexts:
+        if stage_state is not None:
+            stage_state["reranking"] = "not_started"
         return []
 
     print(
-        "\n=============================="
-    )
-
-    print(
-        "RERANKER INPUT:",
-        len(contexts),
-        "documents"
+        "[PIPELINE STAGE]",
+        "request_id=", request_id,
+        "stage=reranking",
+        "status=started",
+        "candidate_count=", len(contexts),
     )
 
 
@@ -839,26 +876,6 @@ async def rerank_local_results(
             reverse=True
         )
 
-        print(
-            "\n=============================="
-        )
-
-        print(
-            "RERANK RESULTS:"
-        )
-
-        for i, item in enumerate(
-            reranked,
-            start=1
-        ):
-
-            print(
-                f"#{i} "
-                f"{item['procedure_name']} | "
-                f"BGE={item['score']:.4f} | "
-                f"RERANK={item['rerank_score']:.4f}"
-            )
-
         # -------------------------------------------------
         # FILTER
         # -------------------------------------------------
@@ -898,21 +915,11 @@ async def rerank_local_results(
                         item
                     )
 
-                    print(
-                        "→ KEEP BY MARGIN:",
-                        item["procedure_name"],
-                        "| gap=",
-                        round(score_gap, 4)
-                    )
+                    print("[RERANK FILTER]", "request_id=", request_id, "decision=keep_by_margin", "score_gap=", round(score_gap, 4))
 
                 else:
 
-                    print(
-                        "→ REJECT BY MARGIN:",
-                        item["procedure_name"],
-                        "| gap=",
-                        round(score_gap, 4)
-                    )
+                    print("[RERANK FILTER]", "request_id=", request_id, "decision=reject_by_margin", "score_gap=", round(score_gap, 4))
 
             filtered = adaptive_filtered[:MAX_RERANK_RESULTS]
 
@@ -925,224 +932,36 @@ async def rerank_local_results(
         ]
 
         print(
-            "\nRERANK FILTERED RESULTS:",
-            len(filtered)
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=reranking",
+            "status=completed",
+            "selected_count=", len(filtered),
+            "top_score=", round(filtered[0]["rerank_score"], 4) if filtered else None,
         )
 
-        for item in filtered:
-
-            print(
-                "→ ACCEPT:",
-                item["procedure_name"],
-                "| rerank=",
-                round(
-                    item["rerank_score"],
-                    4
-                )
-            )
+        if stage_state is not None:
+            stage_state["reranking"] = "completed"
 
         return filtered
 
     except Exception as e:
 
         print(
-            "RERANKER ERROR:",
-            repr(e)
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=reranking",
+            "status=failed",
+            "reason_code=UNKNOWN_PIPELINE_FAILURE",
+            "exception_type=", type(e).__name__,
         )
+
+        if stage_state is not None:
+            stage_state["reranking"] = "failed"
 
         # Nếu reranker lỗi thì không làm
         # toàn bộ Local RAG chết.
         return contexts
-
-
-# =========================================================
-# DETECT QUESTION DATA REQUIREMENT
-# =========================================================
-
-def detect_required_fields(
-    question: str
-) -> list[str]:
-
-    """
-    Xác định field dữ liệu cần có để trả lời câu hỏi.
-    Đây là lớp ENOUGH DATA, không thay thế RAG/Reranker.
-    """
-
-    q = normalize_vietnamese(question)
-
-    required = []
-
-    # -----------------------------------------------------
-    # HỒ SƠ / GIẤY TỜ
-    # -----------------------------------------------------
-    document_patterns = [
-        "giay to",
-        "giay",
-        "ho so",
-        "thanh phan ho so",
-        "can chuan bi",
-        "chuan bi nhung gi",
-        "can nhung gi",
-        "bao gom nhung gi",
-        "can nop",
-        "nop nhung gi",
-    ]
-
-    if any(
-        pattern in q
-        for pattern in document_patterns
-    ):
-        required.append("profile_components")
-
-    # -----------------------------------------------------
-    # THỜI GIAN
-    # -----------------------------------------------------
-    time_patterns = [
-        "bao lau",
-        "thoi gian",
-        "thoi han",
-        "may ngay",
-        "bao nhieu ngay",
-        "giai quyet trong",
-        "mat bao lau",
-    ]
-
-    if any(
-        pattern in q
-        for pattern in time_patterns
-    ):
-        required.append("processing_time")
-
-    # -----------------------------------------------------
-    # PHÍ / LỆ PHÍ
-    # -----------------------------------------------------
-    fee_patterns = [
-        "le phi",
-        "phi bao nhieu",
-        "muc phi",
-        "co phi",
-        "mat bao nhieu",
-        "ton bao nhieu",
-        "bao nhieu tien",
-    ]
-
-    if any(
-        pattern in q
-        for pattern in fee_patterns
-    ):
-        required.append("fees")
-
-    # -----------------------------------------------------
-    # HÌNH THỨC NỘP
-    # -----------------------------------------------------
-    submission_patterns = [
-        "hinh thuc nop",
-        "nop o dau",
-        "nop ho so o dau",
-        "nop truc tuyen",
-        "nop truc tiep",
-        "nop online",
-        "cach nop",
-    ]
-
-    if any(
-        pattern in q
-        for pattern in submission_patterns
-    ):
-        required.append("execution_methods")
-
-    # -----------------------------------------------------
-    # TRÌNH TỰ THỰC HIỆN
-    # -----------------------------------------------------
-    execution_patterns = [
-        "trinh tu",
-        "cac buoc",
-        "thuc hien nhu the nao",
-        "lam nhu the nao",
-        "quy trinh",
-    ]
-
-    if any(
-        pattern in q
-        for pattern in execution_patterns
-    ):
-        required.append("execution_steps")
-
-    # -----------------------------------------------------
-    # ĐIỀU KIỆN
-    # -----------------------------------------------------
-    condition_patterns = [
-        "dieu kien",
-        "yeu cau",
-        "dieu kien thuc hien",
-        "ai duoc",
-        "doi tuong nao",
-    ]
-
-    if any(
-        pattern in q
-        for pattern in condition_patterns
-    ):
-        required.append("requirements_conditions")
-
-    # -----------------------------------------------------
-    # Nếu không nhận diện được intent cụ thể,
-    # yêu cầu full_text làm fallback.
-    # -----------------------------------------------------
-    if not required:
-        required.append("full_text")
-
-    # Loại duplicate nhưng giữ thứ tự.
-    return list(
-        dict.fromkeys(required)
-    )
-
-
-# =========================================================
-# ENOUGH DATA
-# =========================================================
-
-def check_enough_data(
-    question: str,
-    reranked_items: list[dict]
-) -> tuple[bool, list[str]]:
-    """Local RAG la nguon chinh; thieu field khong tu dong day sang MCP."""
-    required_fields = detect_required_fields(question)
-
-    print("\n==============================")
-    print("ENOUGH DATA CHECK")
-    print("REQUIRED FIELDS:", required_fields)
-
-    if not reranked_items:
-        print("→ ENOUGH DATA: FALSE")
-        print("→ REASON: khong co local document")
-        return False, required_fields
-
-    best_item = reranked_items[0]
-    print("BEST PROCEDURE:", best_item.get("procedure_name", ""))
-
-    has_content = bool(
-        str(best_item.get("full_text", "")).strip()
-        or str(best_item.get("text", "")).strip()
-    )
-
-    if not has_content:
-        print("→ ENOUGH DATA: FALSE")
-        print("→ REASON: local document khong co noi dung")
-        return False, required_fields
-
-    missing_fields = [
-        field for field in required_fields
-        if not str(best_item.get(field, "")).strip()
-    ]
-
-    if missing_fields:
-        print("MISSING REQUESTED FIELDS:", missing_fields)
-        print("→ ENOUGH DATA: TRUE (LOCAL DATA LA NGUON CHINH; KHONG FALLBACK MCP)")
-        return True, missing_fields
-
-    print("→ ENOUGH DATA: TRUE")
-    return True, required_fields
 
 
 # =========================================================
@@ -1151,19 +970,19 @@ def check_enough_data(
 async def search_local_rag(
     question: str,
     catalog_evidences: list | None = None,
+    allow_external: bool = False,
+    request_id: str = "unknown",
 ):
     if catalog_evidences is None:
         catalog_evidences = []
-
-
-
+    stage_durations_ms = {}
+    retrieval_started_at = time.perf_counter()
     print(
-        "\n=============================="
-    )
-
-    print(
-        "LOCAL RAG QUESTION:",
-        question
+        "[PIPELINE STAGE]",
+        "request_id=", request_id,
+        "stage=retrieval",
+        "status=started",
+        "question_chars=", len(question),
     )
 
     # =====================================================
@@ -1172,11 +991,6 @@ async def search_local_rag(
     # Chi mo rong query dung cho BGE-M3/Qdrant/Reranker.
     # Cau hoi goc van duoc giu nguyen cho Qwen va session.
     retrieval_question = expand_synonyms_for_retrieval(question)
-
-    print(
-        "RETRIEVAL QUESTION:",
-        retrieval_question
-    )
 
     try:
 
@@ -1225,9 +1039,17 @@ async def search_local_rag(
             find_exact_local_procedures,
             retrieval_question
         )
+        stage_durations_ms["local_retrieval"] = round(
+            (time.perf_counter() - retrieval_started_at) * 1000, 2
+        )
 
         if exact_local_items:
-            print("LOCAL EXACT PROCEDURE MATCHES:", len(exact_local_items))
+            print(
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=local_exact_retrieval",
+                "match_count=", len(exact_local_items),
+            )
             for local_item in exact_local_items:
                 payload = local_item.get("payload", {}) or {}
                 text = str(payload.get("text", "")).strip()
@@ -1261,12 +1083,6 @@ async def search_local_rag(
                 or {}
             )
 
-            print(
-                "PAYLOAD FIELDS:",
-                "processing_time=", payload.get("processing_time", ""),
-                "fees=", payload.get("fees", "")
-            )
-
             procedure_name = str(
                 payload.get(
                     "thu_tuc",
@@ -1289,17 +1105,8 @@ async def search_local_rag(
                 or 0
             )
 
-            print(
-                f"RAG RESULT: "
-                f"{procedure_name} | "
-                f"score={score:.4f}"
-            )
-
             if not text:
-
-                print(
-                    "→ REJECT: empty text"
-                )
+                print("[RETRIEVAL CANDIDATE]", "request_id=", request_id, "decision=reject_empty")
 
                 continue
 
@@ -1313,9 +1120,8 @@ async def search_local_rag(
                     if item.get("score", 0) >= 0.99
                 }
                 if procedure_name not in exact_names:
-                    print("→ REJECT: low score")
+                    print("[RETRIEVAL CANDIDATE]", "request_id=", request_id, "decision=reject_low_score")
                     continue
-                print("→ KEEP: exact local procedure despite low BGE score")
 
             if not is_relevant_procedure(
                 retrieval_question,
@@ -1323,16 +1129,15 @@ async def search_local_rag(
                 score
             ):
 
-                print(
-                    "→ REJECT: "
-                    "không liên quan"
-                )
+                print("[RETRIEVAL CANDIDATE]", "request_id=", request_id, "decision=reject_irrelevant")
 
                 continue
 
             print(
-                "→ ACCEPT:",
-                procedure_name
+                "[RETRIEVAL CANDIDATE]",
+                "request_id=", request_id,
+                "decision=accepted",
+                "score=", round(score, 4),
             )
 
             contexts.append(
@@ -1367,8 +1172,11 @@ async def search_local_rag(
         )
 
         print(
-            "BGE-M3 RELEVANT RESULTS:",
-            len(contexts)
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=retrieval",
+            "status=completed",
+            "candidate_count=", len(contexts),
         )
 
         # -------------------------------------------------
@@ -1379,6 +1187,7 @@ async def search_local_rag(
         # Điều này tránh đưa các thủ tục gần giống như:
         # "Gia hạn...", "Xóa...", "... lưu động" vào context.
 
+        reranking_started_at = time.perf_counter()
         exact_procedure = None
 
         question_normalized = normalize_vietnamese(
@@ -1454,40 +1263,41 @@ async def search_local_rag(
                 "rerank_score"
             ] = 1.0
 
-            print(
-                "\n=============================="
-            )
-            print(
-                "EXACT PROCEDURE MATCH:",
-                exact_procedure[
-                    "procedure_name"
-                ]
-            )
-            print(
-                "→ BỎ QUA RERANKER"
-            )
-            print(
-                "→ CHỈ DÙNG PROCEDURE EXACT MATCH"
-            )
-
             reranked_contexts = [
                 exact_procedure
             ]
+            reranking_status = "completed"
 
         else:
 
             # Không có exact match → dùng reranker như trước.
+            rerank_state = {}
             reranked_contexts = (
                 await rerank_local_results(
                     retrieval_question,
-                    contexts
+                    contexts,
+                    request_id=request_id,
+                    stage_state=rerank_state,
                 )
             )
+            reranking_status = rerank_state.get("reranking", "unknown")
+        stage_durations_ms["reranking"] = round(
+            (time.perf_counter() - reranking_started_at) * 1000, 2
+        )
+        print(
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=reranking",
+            "status=", reranking_status,
+            "candidate_count=", len(contexts),
+            "selected_count=", len(reranked_contexts),
+        )
         # ============================================================
         # EVIDENCE LAYER
         # Direct Catalog + RAG + MCP → Evidence Builder
         # ============================================================
 
+        evidence_started_at = time.perf_counter()
         rag_evidences = rag_results_to_evidence(
             reranked_contexts
         )
@@ -1502,50 +1312,24 @@ async def search_local_rag(
         # ENOUGH DATA CHECK
         # -------------------------------------------------
 
-        enough_data, enough_data_fields = check_enough_data(
+        catalog_sufficiency_candidates = [
+            {
+                **evidence.fields,
+                "text": evidence.content,
+            }
+            for evidence in catalog_evidences
+        ]
+        enough_data, required_fields, missing_fields = check_enough_data(
             question,
-            reranked_contexts
+            catalog_sufficiency_candidates + reranked_contexts,
         )
 
         mcp_evidences = []
-
-        if not enough_data:
-
-            print(
-                "LOCAL RAG DOCUMENT CÓ NHƯNG "
-                "KHÔNG ĐỦ FIELD ĐỂ TRẢ LỜI"
-            )
-
-            print(
-                "→ GỌI MCP DỊCH VỤ CÔNG"
-            )
-
-            try:
-
-                mcp_result = await search_dichvucong(
-                    question
-                )
-
-                mcp_evidences = (
-                    mcp_result.get(
-                        "evidences",
-                        []
-                    )
-                )
-
-                print(
-                    "MCP EVIDENCES:",
-                    len(mcp_evidences)
-                )
-
-            except Exception as e:
-
-                print(
-                    "MCP ERROR:",
-                    repr(e)
-                )
-
-                mcp_evidences = []
+        external_fallback_status = (
+            "not_needed" if enough_data
+            else "pending" if allow_external
+            else "not_allowed"
+        )
 
         # BUILD EVIDENCE BUNDLE AFTER COLLECTING EVIDENCE
         evidence_bundle = evidence_builder.build(
@@ -1554,15 +1338,30 @@ async def search_local_rag(
             mcp_evidences=mcp_evidences,
             query=question,
         )
-
+        stage_durations_ms["evidence_and_sufficiency"] = round(
+            (time.perf_counter() - evidence_started_at) * 1000, 2
+        )
+        print(
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=data_sufficiency",
+            "status=", "sufficient" if enough_data else "insufficient",
+            "required_field_count=", len(required_fields),
+            "missing_field_count=", len(missing_fields),
+        )
+        print(
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=evidence_builder",
+            "status=completed",
+            "catalog_count=", len(catalog_evidences),
+            "rag_count=", len(rag_evidences),
+            "mcp_count=", len(mcp_evidences),
+            "evidence_count=", len(evidence_bundle.evidences),
+        )
         # -------------------------------------------------
         # FINAL LOCAL RAG RESULTS
         # -------------------------------------------------
-
-        print(
-            "\nFINAL LOCAL RAG RESULTS:",
-            len(reranked_contexts)
-        )
 
         formatted_contexts = []
 
@@ -1614,44 +1413,77 @@ async def search_local_rag(
                 context
             )
 
-            print(
-                f"\n--- FINAL RAG "
-                f"DOCUMENT {i + 1} ---"
-            )
-
-            print(
-                context[:1000]
-            )
-
-        if formatted_contexts:
-
-            print(
-                "\nLOCAL RAG + RERANKER "
-                "FOUND RELEVANT DATA"
-            )
-
-        else:
-
-            print(
-                "\nLOCAL RAG + RERANKER "
-                "KHÔNG TÌM THẤY "
-                "DỮ LIỆU ĐỦ LIÊN QUAN"
-            )
+        retrieved_count = len(results)
+        reranked_count = len(reranked_contexts)
+        evidence_count = len(evidence_bundle.evidences)
 
         return {
             "contexts": formatted_contexts,
             "evidence_bundle": evidence_bundle,
+            "retrieval_status": "completed",
+            "reranking_status": reranking_status,
+            "evidence_builder_status": "completed",
+            "enough_data": enough_data,
+            "required_fields": required_fields,
+            "missing_fields": missing_fields,
+            "external_fallback": external_fallback_status,
+            "retrieved_count": retrieved_count,
+            "reranked_count": reranked_count,
+            "evidence_count": evidence_count,
+            "stage_durations_ms": stage_durations_ms,
+            "stage_status": {
+                "retrieval": "completed",
+                "reranking": reranking_status,
+                "evidence_builder": "completed",
+                "data_sufficiency": "completed",
+            },
         }
 
     except Exception as e:
-        import traceback
-        print("LOCAL RAG ERROR TYPE:", type(e).__name__)
-        print("LOCAL RAG ERROR DETAIL:", repr(e))
-        traceback.print_exc()
+        stage_durations_ms.setdefault(
+            "local_retrieval",
+            round((time.perf_counter() - retrieval_started_at) * 1000, 2),
+        )
+        print(
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=retrieval_pipeline",
+            "status=failed",
+            "reason_code=UNKNOWN_PIPELINE_FAILURE",
+            "exception_type=", type(e).__name__,
+        )
+
+        fallback = build_catalog_fallback_after_retrieval_error(
+            question=question,
+            catalog_evidences=catalog_evidences,
+            evidence_builder=evidence_builder,
+            allow_external=allow_external,
+        )
+        fallback["stage_durations_ms"] = stage_durations_ms
+        fallback["retrieved_count"] = 0
+        fallback["reranked_count"] = 0
+        fallback["evidence_count"] = len(fallback["evidence_bundle"].evidences)
+        fallback["stage_status"] = {
+            "retrieval": "failed",
+            "reranking": "not_started",
+            "evidence_builder": "completed",
+            "data_sufficiency": "completed",
+        }
+        fallback["failure_stage"] = "retrieval_pipeline"
+        fallback["failure_reason_code"] = "UNKNOWN_PIPELINE_FAILURE"
+        fallback["exception_type"] = type(e).__name__
+        return fallback
 
     return {
         "contexts": [],
         "evidence_bundle": None,
+        "retrieval_status": "error",
+        "reranking_status": "error",
+        "evidence_builder_status": "not_run",
+        "enough_data": False,
+        "required_fields": [],
+        "missing_fields": [],
+        "external_fallback": "not_evaluated",
     }
 
 # =========================================================
@@ -1723,7 +1555,8 @@ def parse_bool(
 
 async def call_mcp_tool(
     tool_name: str,
-    arguments: dict
+    arguments: dict,
+    request_id: str = "unknown",
 ):
 
     print(
@@ -1731,7 +1564,9 @@ async def call_mcp_tool(
     )
 
     print(
-        "MCP TOOL:",
+        "[MCP STAGE]",
+        "request_id=", request_id,
+        "tool=",
         tool_name
     )
 
@@ -1776,7 +1611,9 @@ async def call_mcp_tool(
             )
 
             print(
-                "MCP TOOL CALLED:",
+                "[MCP STAGE]",
+                "request_id=", request_id,
+                "status=called tool=",
                 tool_name
             )
 
@@ -1788,10 +1625,7 @@ async def call_mcp_tool(
                         content.text
                     )
 
-            print(
-                "MCP RAW RESULTS:",
-                len(mcp_raw_results)
-            )
+            print("[MCP RESULTS]", "count=", len(mcp_raw_results), "chars=", sum(map(len, mcp_raw_results)))
 
             mcp_evidences = mcp_results_to_evidence(
                 mcp_raw_results
@@ -1803,10 +1637,7 @@ async def call_mcp_tool(
             )
 
 
-            print(
-                "MCP TOOL CALLED:",
-                tool_name
-            )
+            print("[MCP STAGE]", "request_id=", request_id, "status=called tool=", tool_name)
 
             contexts = []
 
@@ -1834,18 +1665,11 @@ async def call_mcp_tool(
                 len(contexts)
             )
 
-            for i, text in enumerate(
-                contexts
-            ):
-
-                print(
-                    f"\n--- MCP RESULT "
-                    f"{i + 1} ---"
-                )
-
-                print(
-                    text[:1000]
-                )
+            print(
+                "[MCP RESULTS]",
+                "count=", len(contexts),
+                "chars=", sum(map(len, contexts)),
+            )
 
             return {
                 "contexts": contexts,
@@ -1858,14 +1682,16 @@ async def call_mcp_tool(
 # =========================================================
 
 async def search_dichvucong(
-    question: str
+    question: str,
+    request_id: str = "unknown",
 ):
 
     return await call_mcp_tool(
         "search_dichvucong",
         {
             "keyword": question
-        }
+        },
+        request_id=request_id,
     )
 
 
@@ -1924,6 +1750,7 @@ async def chat_completions(
     request: Request,
     data: dict
 ):
+    request_id = request.headers.get("x-request-id") or f"core_{uuid.uuid4().hex}"
 
     # =====================================================
     # SESSION
@@ -1955,22 +1782,56 @@ async def chat_completions(
         procedure_name=question,
     )
 
-    catalog_result = catalog_service.lookup(catalog_query)
+    catalog_started_at = time.perf_counter()
+    catalog_result, catalog_lookup_status = catalog_service.lookup_optional(
+        catalog_query
+    )
+    catalog_lookup_duration_ms = round(
+        (time.perf_counter() - catalog_started_at) * 1000, 2
+    )
+    if catalog_lookup_status == "unavailable":
+        print(
+            "[CATALOG LOOKUP]",
+            "request_id=", request_id,
+            "status=unavailable",
+            "reason=database_operational_error",
+        )
+    elif catalog_result is None:
+        catalog_lookup_status = "unknown"
+        print(
+            "[CATALOG LOOKUP]",
+            "request_id=", request_id,
+            "status=unknown",
+            "reason=result_missing",
+        )
+    else:
+        catalog_lookup_status = "matched" if catalog_result.matched else "no_match"
 
     catalog_evidences = []
 
-    if catalog_result.matched and catalog_result.record:
+    if catalog_result is not None and catalog_result.matched and catalog_result.record:
         catalog_evidence = catalog_record_to_evidence(
             catalog_result.record
         )
         catalog_evidences.append(catalog_evidence)
 
         print(
-            "\nCATALOG MATCH:",
-            catalog_result.record.procedure_name
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=catalog_lookup",
+            "status=matched",
+            "evidence_count=1",
+            "duration_ms=", catalog_lookup_duration_ms,
         )
-    else:
-        print("\nCATALOG: NO EXACT MATCH")
+    elif catalog_result is not None:
+        print(
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=catalog_lookup",
+            "status=no_match",
+            "evidence_count=0",
+            "duration_ms=", catalog_lookup_duration_ms,
+        )
 
     # =====================================================
     # PERMISSION
@@ -2032,10 +1893,7 @@ async def chat_completions(
             print(
                 "PERMISSION REPLY: USER ĐỒNG Ý"
             )
-            print(
-                "→ KHÔI PHỤC CÂU HỎI TRƯỚC:",
-                pending_question
-            )
+            print("[SESSION]", "request_id=", request_id, "status=pending_question_restored")
 
             question = pending_question
             allow_external = True
@@ -2049,25 +1907,48 @@ async def chat_completions(
             )
 
     print(
-        "\n=============================="
-    )
-
-    print(
-        "REQUEST QUESTION:",
-        question
-    )
-
-    print(
-        "ALLOW_EXTERNAL:",
-        repr(raw_allow_external)
-    )
-
-    print(
-        "ALLOW_EXTERNAL PARSED:",
-        allow_external
+        "[PIPELINE STAGE]",
+        "request_id=", request_id,
+        "stage=request",
+        "status=accepted",
+        "question_chars=", len(question),
+        "allow_external=", allow_external,
     )
 
     async def generate():
+        pipeline_state = {
+            "request_id": request_id,
+            "stage_durations_ms": {
+                "catalog_lookup": catalog_lookup_duration_ms,
+            },
+            "stage_status": {
+                "catalog_lookup": catalog_lookup_status,
+                "retrieval": "not_started",
+                "reranking": "not_started",
+                "evidence_builder": "not_started",
+                "data_sufficiency": "not_started",
+                "prompt_assembly": "not_started",
+                "model_api": "not_started",
+                "verifier": "not_started",
+            },
+            "catalog_lookup": catalog_lookup_status,
+            "retrieval": "not_started",
+            "reranking": "not_started",
+            "evidence_builder": "not_started",
+            "enough_data": "not_evaluated",
+            "required_fields": [],
+            "missing_fields": [],
+            "external_fallback": "not_evaluated",
+            "prompt_assembly": "not_started",
+            "model_api": "not_started",
+            "citation_verification": "not_started",
+            "citation_attempts": 0,
+            "evidence_count": 0,
+            "evidence_ids": [],
+            "cited_evidence_ids": [],
+            "model_processing_time_ms": None,
+            "model_api_elapsed_ms": 0.0,
+        }
 
         # =================================================
         # EMPTY QUESTION
@@ -2148,7 +2029,11 @@ async def chat_completions(
             )
 
             yield (
-                'data: {"status":"done"}'
+                    'data: {"status":"done","verifier":"not_required",'
+                    '"verifier_scope":"not_applicable",'
+                    '"pipeline":{"retrieval":"not_started",'
+                    '"reranking":"not_started",'
+                    '"citation_verification":"not_required"}}'
                 "\n\n"
             )
 
@@ -2165,14 +2050,76 @@ async def chat_completions(
         rag_result = await search_local_rag(
             question,
             catalog_evidences=catalog_evidences,
+            allow_external=allow_external,
+            request_id=request_id,
         )
 
         if isinstance(rag_result, dict):
             contexts = rag_result.get("contexts", [])
             evidence_bundle = rag_result.get("evidence_bundle")
+            pipeline_state["retrieval"] = rag_result.get(
+                "retrieval_status", "unknown"
+            )
+            pipeline_state["reranking"] = rag_result.get(
+                "reranking_status", "unknown"
+            )
+            pipeline_state["evidence_builder"] = rag_result.get(
+                "evidence_builder_status", "unknown"
+            )
+            enough_data = rag_result.get("enough_data")
+            pipeline_state["enough_data"] = (
+                "sufficient" if enough_data is True
+                else "insufficient" if enough_data is False
+                else "not_evaluated"
+            )
+            pipeline_state["required_fields"] = rag_result.get(
+                "required_fields", []
+            )
+            pipeline_state["missing_fields"] = rag_result.get(
+                "missing_fields", []
+            )
+            pipeline_state["external_fallback"] = rag_result.get(
+                "external_fallback", "not_evaluated"
+            )
+            pipeline_state["retrieved_count"] = rag_result.get(
+                "retrieved_count", 0
+            )
+            pipeline_state["reranked_count"] = rag_result.get(
+                "reranked_count", len(contexts)
+            )
+            pipeline_state["evidence_count"] = rag_result.get(
+                "evidence_count", 0
+            )
+            pipeline_state["stage_durations_ms"].update(
+                rag_result.get("stage_durations_ms", {})
+            )
+            pipeline_state["stage_status"].update(
+                rag_result.get("stage_status", {})
+            )
+            pipeline_state["stage_status"]["data_sufficiency"] = (
+                "completed" if enough_data is not None else "unknown"
+            )
+            for key in (
+                "failure_stage",
+                "failure_reason_code",
+                "exception_type",
+            ):
+                if rag_result.get(key):
+                    pipeline_state[key] = rag_result[key]
         else:
             contexts = []
             evidence_bundle = None
+
+        if evidence_bundle is None:
+            evidence_bundle = EvidenceBundle(query=question)
+
+        print(
+            "[RETRIEVAL RESULT]",
+            "request_id=", request_id,
+            "contexts=", len(contexts),
+            "evidence_count=", len(evidence_bundle.evidences),
+        )
+        pipeline_state["evidence_count"] = len(evidence_bundle.evidences)
 
         mcp_evidences = []
         source_type = "local"
@@ -2182,7 +2129,18 @@ async def chat_completions(
         # LOCAL RAG CÓ DỮ LIỆU
         # =================================================
 
-        if contexts:
+        has_local_evidence = bool(contexts or evidence_bundle.evidences)
+        data_source = choose_data_source(
+            has_local_evidence=has_local_evidence,
+            enough_data=(
+                pipeline_state["enough_data"] == "sufficient"
+                if pipeline_state["enough_data"] != "not_evaluated"
+                else None
+            ),
+            allow_external=allow_external,
+        )
+
+        if data_source == "local":
 
             print(
                 "\nLOCAL RAG + RERANKER "
@@ -2211,12 +2169,14 @@ async def chat_completions(
             # CHƯA ĐƯỢC USER CHO PHÉP
             # ---------------------------------------------
 
-            if not allow_external:
+            if data_source == "permission":
 
                 print(
                     "→ CHỜ USER CHO PHÉP "
                     "TRA CỨU DỮ LIỆU NGOÀI"
                 )
+                pipeline_state["citation_verification"] = "not_required"
+                pipeline_state["external_fallback"] = "awaiting_permission"
 
                 yield (
                     "event: status\n"
@@ -2270,8 +2230,17 @@ async def chat_completions(
                 )
 
                 yield (
-                    'data: {"status":"waiting_permission"}'
-                    "\n\n"
+                    "data: "
+                    + json.dumps(
+                        {
+                            "status": "waiting_permission",
+                            "verifier": "not_required",
+                            "verifier_scope": "not_applicable",
+                            "pipeline": pipeline_state,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
                 )
 
                 return
@@ -2301,21 +2270,37 @@ async def chat_completions(
 
 
             try:
-                mcp_result = await search_dichvucong(question)
-
-                contexts = mcp_result.get("contexts", [])
-
-                mcp_raw_results = mcp_result.get("results", [])
-                mcp_evidences = mcp_results_to_evidence(
-                    mcp_raw_results
+                mcp_result = await search_dichvucong(
+                    question,
+                    request_id=request_id,
                 )
 
+                contexts = mcp_result.get("contexts", [])
+                mcp_evidences = mcp_result.get("evidences", [])
+                pipeline_state["external_fallback"] = "completed"
+
             except Exception as e:
-                print("MCP ERROR:", repr(e))
+                print(
+                    "[PIPELINE STAGE]",
+                    "request_id=", request_id,
+                    "stage=external_fallback",
+                    "status=failed",
+                    "reason_code=UNKNOWN_PIPELINE_FAILURE",
+                    "exception_type=", type(e).__name__,
+                )
                 contexts = []
                 mcp_evidences = []
+                pipeline_state["external_fallback"] = "error"
 
             source_type = "external"
+
+            evidence_bundle = evidence_builder.build(
+                rag_evidences=evidence_bundle.evidences,
+                mcp_evidences=mcp_evidences,
+                query=question,
+            )
+        pipeline_state["evidence_builder"] = "completed"
+        pipeline_state["evidence_count"] = len(evidence_bundle.evidences)
 
 
         # =================================================
@@ -2329,16 +2314,12 @@ async def chat_completions(
         )
 
         print(
-            "\n=============================="
-        )
-
-        print(
-            "FINAL CONTEXT SOURCE:",
-            source_type
-        )
-
-        print(
-            context_text[:3000]
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=context_assembly",
+            "status=completed",
+            "source=", source_type,
+            "context_chars=", len(context_text),
         )
 
         # =================================================
@@ -2355,19 +2336,72 @@ async def chat_completions(
 
 
         if evidence_bundle is None:
-            print("WARNING: Local RAG không trả về Evidence Bundle")
+            pipeline_state["stage_status"]["prompt_assembly"] = "not_started"
+            print(
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=prompt_assembly",
+                "status=failed",
+                "reason_code=UNKNOWN_PIPELINE_FAILURE",
+            )
+            evidence_bundle = EvidenceBundle(query=question)
 
 
         # PROMPT ASSEMBLY
+        prompt_started_at = time.perf_counter()
         assembled_prompt = prompt_assembler.build(
         question=question,
         evidence_bundle=evidence_bundle,
-        system_instruction=(MODEL API ERROR
-            str(data.get("system_instruction", "")).strip() or None
+        system_instruction=(
+        str(data.get("system_instruction", "")).strip() or None
         ),
 )
 
         system_prompt = assembled_prompt
+        prompt_evidences = prompt_assembler.included_evidences(evidence_bundle)
+        verification_bundle = EvidenceBundle(
+            query=evidence_bundle.query,
+            evidences=prompt_evidences,
+            total=len(prompt_evidences),
+            metadata=dict(evidence_bundle.metadata),
+        )
+        pipeline_state["prompt_assembly"] = "completed"
+        pipeline_state["stage_status"]["prompt_assembly"] = "completed"
+        pipeline_state["stage_durations_ms"]["prompt_assembly"] = round(
+            (time.perf_counter() - prompt_started_at) * 1000, 2
+        )
+        pipeline_state["evidence_count"] = len(prompt_evidences)
+        pipeline_state["evidence_ids"] = [
+            item.evidence_id for item in prompt_evidences
+        ]
+        print(
+            "[PIPELINE STAGE]",
+            "request_id=", request_id,
+            "stage=prompt_assembly",
+            "status=completed",
+            "prompt_chars=", len(system_prompt),
+            "has_evidence=", bool(prompt_evidences),
+            "evidence_count=", len(prompt_evidences),
+        )
+        verification_status = "error"
+
+        class RequestTimedVerifier:
+            def verify(self, structured_answer, selected_evidence_bundle):
+                verify_started_at = time.perf_counter()
+                try:
+                    return verifier.verify(
+                        structured_answer,
+                        selected_evidence_bundle,
+                    )
+                finally:
+                    pipeline_state["stage_durations_ms"]["citation_verification"] = round(
+                        pipeline_state["stage_durations_ms"].get(
+                            "citation_verification", 0.0
+                        ) + (time.perf_counter() - verify_started_at) * 1000,
+                        2,
+                    )
+
+        timed_verifier = RequestTimedVerifier()
 
         # =================================================
         # STEP 6
@@ -2385,70 +2419,239 @@ async def chat_completions(
 
         try:
 
-            async with httpx.AsyncClient() as client:
-
-                response = await client.post(
-                    MODEL_API_URL,
-                    json={
-                        "prompt":
-                            system_prompt
-                    },
-                    timeout=180.0
+            async def call_model(model_prompt: str, citation_attempt: int) -> dict:
+                prompt_digest = hashlib.sha256(
+                    model_prompt.encode("utf-8")
+                ).hexdigest()
+                print(
+                    "[PIPELINE STAGE]",
+                    "request_id=", request_id,
+                    "stage=model_api",
+                    "status=started",
+                    "citation_attempt=", citation_attempt,
+                    "prompt_chars=", len(model_prompt),
+                    "prompt_sha256=", prompt_digest,
                 )
+                model_started_at = time.perf_counter()
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await post_model_generation(
+                            client=client,
+                            url=MODEL_API_URL,
+                            prompt=model_prompt,
+                            request_id=request_id,
+                            citation_attempt=citation_attempt,
+                            max_new_tokens=768,
+                            timeout_seconds=180.0,
+                        )
+                except Exception as exc:
+                    elapsed_ms = round(
+                        (time.perf_counter() - model_started_at) * 1000,
+                        2,
+                    )
+                    pipeline_state["model_api_elapsed_ms"] += elapsed_ms
+                    pipeline_state["stage_durations_ms"]["model_api"] = round(
+                        pipeline_state["stage_durations_ms"].get("model_api", 0.0)
+                        + elapsed_ms,
+                        2,
+                    )
+                    reason_code = classify_upstream_exception(exc)
+                    attempt_failure = {
+                        "citation_attempt": citation_attempt,
+                        "reason_code": reason_code,
+                        "exception_type": type(exc).__name__,
+                    }
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        attempt_failure["upstream_status_code"] = exc.response.status_code
+                    pipeline_state.setdefault("generation_attempt_failures", []).append(
+                        attempt_failure
+                    )
+                    print(
+                        "[PIPELINE STAGE]",
+                        "request_id=", request_id,
+                        "stage=model_api",
+                        "status=failed",
+                        "citation_attempt=", citation_attempt,
+                        "reason_code=", reason_code,
+                        "exception_type=", type(exc).__name__,
+                        "upstream_status_code=", attempt_failure.get("upstream_status_code"),
+                        "elapsed_ms=", elapsed_ms,
+                        "prompt_chars=", len(model_prompt),
+                        "prompt_sha256=", prompt_digest,
+                    )
+                    raise
+                elapsed_ms = round(
+                    (time.perf_counter() - model_started_at) * 1000,
+                    2,
+                )
+                pipeline_state["model_api_elapsed_ms"] += elapsed_ms
+                pipeline_state["stage_durations_ms"]["model_api"] = round(
+                    pipeline_state["stage_durations_ms"].get("model_api", 0.0)
+                    + elapsed_ms,
+                    2,
+                )
+                print(
+                    "[PIPELINE STAGE]",
+                    "request_id=", request_id,
+                    "stage=model_api",
+                    "status=responded",
+                    "citation_attempt=", citation_attempt,
+                    "upstream_status_code=", response.status_code,
+                    "elapsed_ms=", elapsed_ms,
+                    "prompt_chars=", len(model_prompt),
+                    "prompt_sha256=", prompt_digest,
+                )
+                try:
+                    result = response.json()
+                except ValueError:
+                    return {}
+                if not isinstance(result, dict):
+                    return {}
+                raw_answer = result.get("answer")
+                print(
+                    "[PIPELINE STAGE]",
+                    "request_id=", request_id,
+                    "stage=model_api_parse",
+                    "status=completed" if isinstance(raw_answer, str) else "failed",
+                    "citation_attempt=", citation_attempt,
+                    "answer_chars=", len(raw_answer) if isinstance(raw_answer, str) else 0,
+                )
+                return result
 
-            print(
-                "MODEL STATUS:",
-                response.status_code
+            outcome = await generate_with_citation_retry(
+                prompt=assembled_prompt,
+                evidence_bundle=verification_bundle,
+                generate=call_model,
+                verifier=timed_verifier,
+                max_attempts=2,
+                on_attempt=make_citation_attempt_logger(
+                    request_id,
+                    _safe_diagnostic_text,
+                ),
             )
-
-            if response.status_code != 200:
-
-                print(
-                    "MODEL ERROR:",
-                    response.text
+            structured_answer = outcome.structured_answer
+            verification_result = outcome.verification
+            generation_succeeded = (
+                outcome.generation_error is None
+                and outcome.last_model_response.get("success") is True
+            )
+            verification_status = (
+                ("passed" if verification_result.passed else "failed")
+                if generation_succeeded
+                else "error"
+            )
+            pipeline_state["model_api"] = (
+                "completed" if generation_succeeded else "error"
+            )
+            pipeline_state["stage_status"]["model_api"] = (
+                "completed" if generation_succeeded else "failed"
+            )
+            pipeline_state["model_processing_time_ms"] = (
+                outcome.model_processing_time_ms
+            )
+            pipeline_state["citation_verification"] = verification_status
+            pipeline_state["stage_status"]["verifier"] = (
+                "passed" if verification_status == "passed"
+                else "failed" if verification_status == "failed"
+                else "unknown"
+            )
+            answer = (
+                outcome.answer
+                if generation_succeeded and outcome.answer
+                else "Model API request failed; no answer was returned."
+                if not generation_succeeded
+                else "Chua the dua ra cau tra loi phap ly du dieu kien "
+                "kiem tra trich dan Evidence."
+            )
+            retry_attempts = outcome.attempts
+            pipeline_state["citation_attempts"] = retry_attempts
+            pipeline_state["verifier_reason_counts"] = verifier_reason_codes(
+                verification_result
+            )
+            if outcome.generation_error:
+                last_failure = next(
+                    reversed(pipeline_state.get("generation_attempt_failures", [])),
+                    {},
                 )
-
-                answer = (
-                    "Model API trả về lỗi."
+                pipeline_state["failure_stage"] = "model_api"
+                pipeline_state["failure_reason_code"] = last_failure.get(
+                    "reason_code", "UNKNOWN_PIPELINE_FAILURE"
                 )
-
-            else:
-
-                result = (
-                    response.json()
+                pipeline_state["exception_type"] = last_failure.get(
+                    "exception_type", outcome.generation_error
                 )
-
-                print(
-                    "MODEL RESULT:",
-                    result
-                )
-
-                answer = (
-                    result.get(
-                        "answer",
-                        ""
-                    )
-                    .strip()
-                )
-
-                if not answer:
-
-                    answer = (
-                        "Model không trả về "
-                        "câu trả lời."
-                    )
+                if "upstream_status_code" in last_failure:
+                    pipeline_state["upstream_status_code"] = last_failure[
+                        "upstream_status_code"
+                    ]
+            elif generation_succeeded:
+                pipeline_state.pop("failure_stage", None)
+                pipeline_state.pop("failure_reason_code", None)
+                pipeline_state.pop("exception_type", None)
+                pipeline_state.pop("upstream_status_code", None)
+            elif verification_status == "failed":
+                pipeline_state["failure_stage"] = "verifier"
+                pipeline_state["failure_reason_code"] = "VERIFIER_NOT_PASSED"
+            elif verification_status == "error":
+                pipeline_state["failure_stage"] = "model_api_response"
+                pipeline_state["failure_reason_code"] = "UNKNOWN_PIPELINE_FAILURE"
+            pipeline_state["cited_evidence_ids"] = sorted({
+                evidence_id
+                for claim in structured_answer.claims
+                for evidence_id in claim.evidence_ids
+            })
+            print(
+                "[CITATION INTEGRITY]",
+                "request_id=", request_id,
+                "status=", verification_status,
+                "checked_claims=", verification_result.checked_claims,
+                "linked_claims=", verification_result.linked_claims,
+                "semantic_support=not_evaluated",
+                "attempts=", retry_attempts,
+                "reason_counts=", json.dumps(
+                    pipeline_state["verifier_reason_counts"],
+                    sort_keys=True,
+                ),
+            )
+            print(
+                "[ANSWER RESULT]",
+                "status=", "generated" if outcome.answer else "withheld",
+                "answer_chars=", len(answer),
+                "attempts=", retry_attempts,
+                "cited_evidence_ids=", pipeline_state["cited_evidence_ids"],
+                "claims_with_evidence=", sum(
+                    bool(claim.evidence_ids)
+                    for claim in structured_answer.claims
+                ),
+            )
 
         except Exception as e:
 
+            verification_status = "error"
+            pipeline_state["model_api"] = "error"
+            pipeline_state["citation_verification"] = "error"
+            pipeline_state["stage_status"]["model_api"] = "failed"
+            pipeline_state["stage_status"]["verifier"] = "unknown"
+            pipeline_state["failure_stage"] = "generation_pipeline"
+            pipeline_state["failure_reason_code"] = classify_upstream_exception(e)
+            pipeline_state["exception_type"] = type(e).__name__
+
             print(
-                "MODEL API ERROR:",
-                repr(e)
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=generation_pipeline",
+                "status=failed",
+                "reason_code=", pipeline_state["failure_reason_code"],
+                "exception_type=", type(e).__name__,
             )
 
             answer = (
                 "Không thể kết nối "
                 "Model API :8001."
             )
+
+        if verification_status == "error":
+            answer = "Model API request failed; no answer was returned."
 
         # =================================================
         # SAVE ASSISTANT MESSAGE
@@ -2489,8 +2692,17 @@ async def chat_completions(
         )
 
         yield (
-            'data: {"status":"done"}'
-            "\n\n"
+            "data: "
+            + json.dumps(
+                {
+                    "status": "done",
+                    "verifier": verification_status,
+                    "verifier_scope": "citation_integrity_only",
+                    "pipeline": pipeline_state,
+                },
+                ensure_ascii=False,
+            )
+            + "\n\n"
         )
 
     response = StreamingResponse(

@@ -1,0 +1,618 @@
+﻿{
+    "openapi":  "3.1.0",
+    "info":  {
+                 "title":  "DAI Legal Model - Enterprise Core Gateway API",
+                 "description":  "Há» thá»ng Backend chuáº©n sáº£n xuáº¥t phá»¥c vá»¥ trá»£ lÃ½ AI phÃ¡p lÃ½.\nTÃ­ch há»£p cÃ¡c Module:\n1. API Gateway \u0026 Backend API (FastAPI)\n2. Orchestrator (Domain Router + Agent Planner)\n3. Query Analysis \u0026 Clarification (HyDE \u0026 Advanced Rewriting)",
+                 "version":  "2.5.0"
+             },
+    "paths":  {
+                  "/api/v2/domains/":  {
+                                           "get":  {
+                                                       "tags":  [
+                                                                    "Domain Config \u0026 Policy Registry"
+                                                                ],
+                                                       "summary":  "Api List All Domains",
+                                                       "description":  "API láº¥y danh sÃ¡ch toÃ n bá» cÃ¡c domain Äang hoáº¡t Äá»ng.",
+                                                       "operationId":  "api_list_all_domains_api_v2_domains__get",
+                                                       "responses":  {
+                                                                         "200":  {
+                                                                                     "description":  "Successful Response",
+                                                                                     "content":  {
+                                                                                                     "application/json":  {
+                                                                                                                              "schema":  {
+                                                                                                                                             "items":  {
+                                                                                                                                                           "type":  "string"
+                                                                                                                                                       },
+                                                                                                                                             "type":  "array",
+                                                                                                                                             "title":  "Response Api List All Domains Api V2 Domains  Get"
+                                                                                                                                         }
+                                                                                                                          }
+                                                                                                 }
+                                                                                 }
+                                                                     }
+                                                   }
+                                       },
+                  "/api/v2/domains/{domain_id}":  {
+                                                      "get":  {
+                                                                  "tags":  [
+                                                                               "Domain Config \u0026 Policy Registry"
+                                                                           ],
+                                                                  "summary":  "Api Get Domain Config",
+                                                                  "description":  "API truy xuáº¥t toÃ n bá» cáº¥u hÃ¬nh chi tiáº¿t (prompt, policy, persona, tools) theo domain_id.",
+                                                                  "operationId":  "api_get_domain_config_api_v2_domains__domain_id__get",
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "domain_id",
+                                                                                         "in":  "path",
+                                                                                         "required":  true,
+                                                                                         "schema":  {
+                                                                                                        "type":  "string",
+                                                                                                        "title":  "Domain Id"
+                                                                                                    }
+                                                                                     }
+                                                                                 ],
+                                                                  "responses":  {
+                                                                                    "200":  {
+                                                                                                "description":  "Successful Response",
+                                                                                                "content":  {
+                                                                                                                "application/json":  {
+                                                                                                                                         "schema":  {
+                                                                                                                                                        "$ref":  "#/components/schemas/DomainConfig"
+                                                                                                                                                    }
+                                                                                                                                     }
+                                                                                                            }
+                                                                                            },
+                                                                                    "422":  {
+                                                                                                "description":  "Validation Error",
+                                                                                                "content":  {
+                                                                                                                "application/json":  {
+                                                                                                                                         "schema":  {
+                                                                                                                                                        "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                                    }
+                                                                                                                                     }
+                                                                                                            }
+                                                                                            }
+                                                                                }
+                                                              }
+                                                  },
+                  "/health":  {
+                                  "get":  {
+                                              "tags":  [
+                                                           "System Diagnostics"
+                                                       ],
+                                              "summary":  "Health Check",
+                                              "operationId":  "health_check_health_get",
+                                              "responses":  {
+                                                                "200":  {
+                                                                            "description":  "Successful Response",
+                                                                            "content":  {
+                                                                                            "application/json":  {
+                                                                                                                     "schema":  {
+
+                                                                                                                                }
+                                                                                                                 }
+                                                                                        }
+                                                                        }
+                                                            }
+                                          }
+                              },
+                  "/api/v2/legal-query":  {
+                                              "post":  {
+                                                           "tags":  [
+                                                                        "Core Legal Processing Pipeline"
+                                                                    ],
+                                                           "summary":  "Process Legal Consultation Query",
+                                                           "operationId":  "process_legal_consultation_query_api_v2_legal_query_post",
+                                                           "requestBody":  {
+                                                                               "content":  {
+                                                                                               "application/json":  {
+                                                                                                                        "schema":  {
+                                                                                                                                       "$ref":  "#/components/schemas/QueryRequest"
+                                                                                                                                   }
+                                                                                                                    }
+                                                                                           },
+                                                                               "required":  true
+                                                                           },
+                                                           "responses":  {
+                                                                             "200":  {
+                                                                                         "description":  "Successful Response",
+                                                                                         "content":  {
+                                                                                                         "application/json":  {
+                                                                                                                                  "schema":  {
+                                                                                                                                                 "$ref":  "#/components/schemas/CoreAPIResponse"
+                                                                                                                                             }
+                                                                                                                              }
+                                                                                                     }
+                                                                                     },
+                                                                             "422":  {
+                                                                                         "description":  "Validation Error",
+                                                                                         "content":  {
+                                                                                                         "application/json":  {
+                                                                                                                                  "schema":  {
+                                                                                                                                                 "$ref":  "#/components/schemas/HTTPValidationError"
+                                                                                                                                             }
+                                                                                                                              }
+                                                                                                     }
+                                                                                     }
+                                                                         }
+                                                       }
+                                          }
+              },
+    "components":  {
+                       "schemas":  {
+                                       "AnalysisResult":  {
+                                                              "properties":  {
+                                                                                 "original_query":  {
+                                                                                                        "type":  "string",
+                                                                                                        "title":  "Original Query"
+                                                                                                    },
+                                                                                 "cleaned_query":  {
+                                                                                                       "type":  "string",
+                                                                                                       "title":  "Cleaned Query"
+                                                                                                   },
+                                                                                 "extracted_citations":  {
+                                                                                                             "items":  {
+                                                                                                                           "type":  "string"
+                                                                                                                       },
+                                                                                                             "type":  "array",
+                                                                                                             "title":  "Extracted Citations",
+                                                                                                             "description":  "CÃ¡c Äiá»u luáº­t hoáº·c bá» luáº­t ÄÆ°á»£c trÃ­ch xuáº¥t trá»±c tiáº¿p tá»« cÃ¢u há»i"
+                                                                                                         },
+                                                                                 "expanded_terms":  {
+                                                                                                        "items":  {
+                                                                                                                      "type":  "string"
+                                                                                                                  },
+                                                                                                        "type":  "array",
+                                                                                                        "title":  "Expanded Terms",
+                                                                                                        "description":  "Tá»« khÃ³a vÃ  tá»« Äá»ng nghÄ©a chuyÃªn ngÃ nh phÃ¡p lÃ½"
+                                                                                                    },
+                                                                                 "hypothetical_document":  {
+                                                                                                               "anyOf":  [
+                                                                                                                             {
+                                                                                                                                 "type":  "string"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "type":  "null"
+                                                                                                                             }
+                                                                                                                         ],
+                                                                                                               "title":  "Hypothetical Document",
+                                                                                                               "description":  "VÄn báº£n phÃ¡p lÃ½ giáº£ Äá»nh sinh ra theo cÆ¡ cháº¿ HyDE"
+                                                                                                           },
+                                                                                 "confidence_score":  {
+                                                                                                          "type":  "number",
+                                                                                                          "title":  "Confidence Score",
+                                                                                                          "description":  "Äá» tin cáº­y cá»§a quÃ¡ trÃ¬nh bÃ³c tÃ¡ch vÃ  phÃ¢n tÃ­ch Ã½ Äá»nh"
+                                                                                                      }
+                                                                             },
+                                                              "type":  "object",
+                                                              "required":  [
+                                                                               "original_query",
+                                                                               "cleaned_query",
+                                                                               "confidence_score"
+                                                                           ],
+                                                              "title":  "AnalysisResult"
+                                                          },
+                                       "ChunkingStrategy":  {
+                                                                "properties":  {
+                                                                                   "strategy_name":  {
+                                                                                                         "type":  "string",
+                                                                                                         "title":  "Strategy Name",
+                                                                                                         "description":  "TÃªn chiáº¿n lÆ°á»£c chia Äoáº¡n (vÃ­ dá»¥: semantic_legal, recursive)",
+                                                                                                         "example":  "semantic_legal"
+                                                                                                     },
+                                                                                   "chunk_size":  {
+                                                                                                      "type":  "integer",
+                                                                                                      "exclusiveMinimum":  0.0,
+                                                                                                      "title":  "Chunk Size",
+                                                                                                      "description":  "KÃ­ch thÆ°á»c tá»i Äa cá»§a má»i Äoáº¡n vÄn báº£n",
+                                                                                                      "example":  512
+                                                                                                  },
+                                                                                   "chunk_overlap":  {
+                                                                                                         "type":  "integer",
+                                                                                                         "minimum":  0.0,
+                                                                                                         "title":  "Chunk Overlap",
+                                                                                                         "description":  "Äá» chá»ng láº·p giá»¯a cÃ¡c Äoáº¡n vÄn báº£n",
+                                                                                                         "example":  64
+                                                                                                     }
+                                                                               },
+                                                                "type":  "object",
+                                                                "required":  [
+                                                                                 "strategy_name",
+                                                                                 "chunk_size",
+                                                                                 "chunk_overlap"
+                                                                             ],
+                                                                "title":  "ChunkingStrategy",
+                                                                "description":  "Cáº¥u hÃ¬nh chiáº¿n lÆ°á»£c phÃ¢n Äoáº¡n vÄn báº£n (Chunking) cho tá»«ng domain."
+                                                            },
+                                       "CoreAPIResponse":  {
+                                                               "properties":  {
+                                                                                  "request_id":  {
+                                                                                                     "type":  "string",
+                                                                                                     "title":  "Request Id",
+                                                                                                     "description":  "MÃ£ váº¿t duy nháº¥t cá»§a request (Request Trace ID)"
+                                                                                                 },
+                                                                                  "timestamp":  {
+                                                                                                    "type":  "string",
+                                                                                                    "title":  "Timestamp",
+                                                                                                    "description":  "Thá»i gian ghi nháº­n pháº£n há»i (UTC ISO format)"
+                                                                                                },
+                                                                                  "processing_time_ms":  {
+                                                                                                             "type":  "number",
+                                                                                                             "title":  "Processing Time Ms",
+                                                                                                             "description":  "Tá»ng thá»i gian xá»­ lÃ½ cá»§a Gateway (tÃ­nh báº±ng mili-giÃ¢y)"
+                                                                                                         },
+                                                                                  "status":  {
+                                                                                                 "type":  "string",
+                                                                                                 "title":  "Status",
+                                                                                                 "description":  "Tráº¡ng thÃ¡i thá»±c thi yÃªu cáº§u (SUCCESS / FAILED)"
+                                                                                             },
+                                                                                  "query_analysis":  {
+                                                                                                         "$ref":  "#/components/schemas/AnalysisResult",
+                                                                                                         "description":  "Káº¿t quáº£ phÃ¢n tÃ­ch tá»« module Query Analysis"
+                                                                                                     },
+                                                                                  "routing_and_planning":  {
+                                                                                                               "$ref":  "#/components/schemas/RoutingPlanResult",
+                                                                                                               "description":  "Káº¿t quáº£ phÃ¢n vÃ¹ng domain vÃ  káº¿ hoáº¡ch thá»±c thi tá»« Orchestrator"
+                                                                                                           },
+                                                                                  "next_step":  {
+                                                                                                    "type":  "string",
+                                                                                                    "title":  "Next Step",
+                                                                                                    "description":  "Giai Äoáº¡n xá»­ lÃ½ ÄÃ£ thá»±c hiá»n"
+                                                                                                },
+                                                                                  "domain_policy":  {
+                                                                                                        "additionalProperties":  true,
+                                                                                                        "type":  "object",
+                                                                                                        "title":  "Domain Policy",
+                                                                                                        "description":  "Policy ÄÆ°á»£c chá»n theo domain"
+                                                                                                    },
+                                                                                  "answer":  {
+                                                                                                 "anyOf":  [
+                                                                                                               {
+                                                                                                                   "type":  "string"
+                                                                                                               },
+                                                                                                               {
+                                                                                                                   "type":  "null"
+                                                                                                               }
+                                                                                                           ],
+                                                                                                 "title":  "Answer",
+                                                                                                 "description":  "CÃ¢u tráº£ lá»i tá»« pipeline xá»­ lÃ½ phÃ­a backend"
+                                                                                             },
+                                                                                  "pipeline_execution":  {
+                                                                                                             "additionalProperties":  true,
+                                                                                                             "type":  "object",
+                                                                                                             "title":  "Pipeline Execution",
+                                                                                                             "description":  "Tráº¡ng thÃ¡i cÃ¡c bÆ°á»c pipeline ÄÃ£ ÄÆ°á»£c gá»i"
+                                                                                                         }
+                                                                              },
+                                                               "type":  "object",
+                                                               "required":  [
+                                                                                "request_id",
+                                                                                "timestamp",
+                                                                                "processing_time_ms",
+                                                                                "status",
+                                                                                "query_analysis",
+                                                                                "routing_and_planning",
+                                                                                "next_step"
+                                                                            ],
+                                                               "title":  "CoreAPIResponse"
+                                                           },
+                                       "DomainConfig":  {
+                                                            "properties":  {
+                                                                               "domain_id":  {
+                                                                                                 "type":  "string",
+                                                                                                 "title":  "Domain Id",
+                                                                                                 "description":  "MÃ£ Äá»nh danh duy nháº¥t cá»§a domain",
+                                                                                                 "example":  "legal_ai"
+                                                                                             },
+                                                                               "domain_name":  {
+                                                                                                   "type":  "string",
+                                                                                                   "title":  "Domain Name",
+                                                                                                   "description":  "TÃªn hiá»n thá» Äáº§y Äá»§ cá»§a domain",
+                                                                                                   "example":  "Universal Legal AI Assistant"
+                                                                                               },
+                                                                               "description":  {
+                                                                                                   "type":  "string",
+                                                                                                   "title":  "Description",
+                                                                                                   "description":  "MÃ´ táº£ pháº¡m vi nghiá»p vá»¥ chuyÃªn sÃ¢u"
+                                                                                               },
+                                                                               "prompt_template":  {
+                                                                                                       "type":  "string",
+                                                                                                       "title":  "Prompt Template",
+                                                                                                       "description":  "Máº«u prompt chÃ­nh dÃ¹ng Äá» sinh cÃ¢u tráº£ lá»i"
+                                                                                                   },
+                                                                               "chunking_strategy":  {
+                                                                                                         "$ref":  "#/components/schemas/ChunkingStrategy"
+                                                                                                     },
+                                                                               "persona":  {
+                                                                                               "$ref":  "#/components/schemas/PersonaConfig"
+                                                                                           },
+                                                                               "policy":  {
+                                                                                              "$ref":  "#/components/schemas/PolicyConfig"
+                                                                                          }
+                                                                           },
+                                                            "type":  "object",
+                                                            "required":  [
+                                                                             "domain_id",
+                                                                             "domain_name",
+                                                                             "description",
+                                                                             "prompt_template",
+                                                                             "chunking_strategy",
+                                                                             "persona",
+                                                                             "policy"
+                                                                         ],
+                                                            "title":  "DomainConfig",
+                                                            "description":  "Schema cáº¥u hÃ¬nh tá»ng thá» cho má»t domain Äá»c láº­p."
+                                                        },
+                                       "HTTPValidationError":  {
+                                                                   "properties":  {
+                                                                                      "detail":  {
+                                                                                                     "items":  {
+                                                                                                                   "$ref":  "#/components/schemas/ValidationError"
+                                                                                                               },
+                                                                                                     "type":  "array",
+                                                                                                     "title":  "Detail"
+                                                                                                 }
+                                                                                  },
+                                                                   "type":  "object",
+                                                                   "title":  "HTTPValidationError"
+                                                               },
+                                       "PersonaConfig":  {
+                                                             "properties":  {
+                                                                                "tone":  {
+                                                                                             "type":  "string",
+                                                                                             "enum":  [
+                                                                                                          "formal",
+                                                                                                          "friendly",
+                                                                                                          "strict",
+                                                                                                          "professional"
+                                                                                                      ],
+                                                                                             "title":  "Tone",
+                                                                                             "description":  "Giá»ng Äiá»u pháº£n há»i chÃ­nh",
+                                                                                             "example":  "formal"
+                                                                                         },
+                                                                                "language_style":  {
+                                                                                                       "type":  "string",
+                                                                                                       "title":  "Language Style",
+                                                                                                       "description":  "Phong cÃ¡ch ngÃ´n ngá»¯ chi tiáº¿t",
+                                                                                                       "example":  "Chuáº©n má»±c phÃ¡p lÃ½, khÃ¡ch quan, chÃ­nh xÃ¡c"
+                                                                                                   },
+                                                                                "system_prompt_addition":  {
+                                                                                                               "type":  "string",
+                                                                                                               "title":  "System Prompt Addition",
+                                                                                                               "description":  "Prompt bá» sung Äáº·c thÃ¹ cho domain",
+                                                                                                               "example":  "Tuyá»t Äá»i tuÃ¢n thá»§ Äiá»u luáº­t hiá»n hÃ nh, khÃ´ng suy ÄoÃ¡n ngoÃ i vÄn báº£n."
+                                                                                                           }
+                                                                            },
+                                                             "type":  "object",
+                                                             "required":  [
+                                                                              "tone",
+                                                                              "language_style",
+                                                                              "system_prompt_addition"
+                                                                          ],
+                                                             "title":  "PersonaConfig",
+                                                             "description":  "Cáº¥u hÃ¬nh nhÃ¢n váº­t vÃ  phong cÃ¡ch pháº£n há»i cá»§a trá»£ lÃ½ AI."
+                                                         },
+                                       "PolicyConfig":  {
+                                                            "properties":  {
+                                                                               "mode":  {
+                                                                                            "type":  "string",
+                                                                                            "enum":  [
+                                                                                                         "STRICT",
+                                                                                                         "FRIENDLY"
+                                                                                                     ],
+                                                                                            "title":  "Mode",
+                                                                                            "description":  "Cháº¿ Äá» hoáº¡t Äá»ng: STRICT (nghiÃªm ngáº·t) hoáº·c FRIENDLY (thÃ¢n thiá»n)",
+                                                                                            "example":  "STRICT"
+                                                                                        },
+                                                                               "verification_threshold":  {
+                                                                                                              "type":  "number",
+                                                                                                              "maximum":  1.0,
+                                                                                                              "minimum":  0.0,
+                                                                                                              "title":  "Verification Threshold",
+                                                                                                              "description":  "NgÆ°á»¡ng kiá»m chá»©ng Äá» tin cáº­y tá»i thiá»u",
+                                                                                                              "example":  0.85
+                                                                                                          },
+                                                                               "allowed_mcp_tools":  {
+                                                                                                         "items":  {
+                                                                                                                       "type":  "string"
+                                                                                                                   },
+                                                                                                         "type":  "array",
+                                                                                                         "title":  "Allowed Mcp Tools",
+                                                                                                         "description":  "Danh sÃ¡ch Whitelist cÃ¡c MCP tools ÄÆ°á»£c phÃ©p gá»i trong domain nÃ y",
+                                                                                                         "example":  [
+                                                                                                                         "tra_cuu_van_ban",
+                                                                                                                         "kiem_tra_hieu_luc"
+                                                                                                                     ]
+                                                                                                     },
+                                                                               "risk_alert_enabled":  {
+                                                                                                          "type":  "boolean",
+                                                                                                          "title":  "Risk Alert Enabled",
+                                                                                                          "description":  "KÃ­ch hoáº¡t cáº£nh bÃ¡o rá»§i ro phÃ¡p lÃ½/nghiá»p vá»¥",
+                                                                                                          "default":  true
+                                                                                                      }
+                                                                           },
+                                                            "type":  "object",
+                                                            "required":  [
+                                                                             "mode",
+                                                                             "verification_threshold"
+                                                                         ],
+                                                            "title":  "PolicyConfig",
+                                                            "description":  "Cáº¥u hÃ¬nh chÃ­nh sÃ¡ch an toÃ n, kiá»m chá»©ng vÃ  cÃ´ng cá»¥ MCP ÄÆ°á»£c phÃ©p."
+                                                        },
+                                       "QueryRequest":  {
+                                                            "properties":  {
+                                                                               "query":  {
+                                                                                             "type":  "string",
+                                                                                             "maxLength":  4000,
+                                                                                             "minLength":  2,
+                                                                                             "title":  "Query",
+                                                                                             "description":  "CÃ¢u há»i hoáº·c váº¥n Äá» phÃ¡p lÃ½ cáº§n tÆ° váº¥n",
+                                                                                             "example":  "Thá»§ tá»¥c thÃ nh láº­p cÃ´ng ty cá» pháº§n vÃ  Äiá»u kiá»n vá» vá»n Äiá»u lá» theo luáº­t má»i?"
+                                                                                         },
+                                                                               "domain_hint":  {
+                                                                                                   "anyOf":  [
+                                                                                                                 {
+                                                                                                                     "type":  "string"
+                                                                                                                 },
+                                                                                                                 {
+                                                                                                                     "type":  "null"
+                                                                                                                 }
+                                                                                                             ],
+                                                                                                   "title":  "Domain Hint",
+                                                                                                   "description":  "Gá»£i Ã½ phÃ¢n vÃ¹ng luáº­t (civil_law, enterprise_law, criminal_law, administrative_law, labor_law, land_law)",
+                                                                                                   "example":  "enterprise_law"
+                                                                                               },
+                                                                               "user_context":  {
+                                                                                                    "anyOf":  [
+                                                                                                                  {
+                                                                                                                      "$ref":  "#/components/schemas/UserContext"
+                                                                                                                  },
+                                                                                                                  {
+                                                                                                                      "type":  "null"
+                                                                                                                  }
+                                                                                                              ],
+                                                                                                    "description":  "ThÃ´ng tin bá»i cáº£nh ngÆ°á»i dÃ¹ng thá»±c hiá»n request"
+                                                                                                },
+                                                                               "enable_hyde":  {
+                                                                                                   "type":  "boolean",
+                                                                                                   "title":  "Enable Hyde",
+                                                                                                   "description":  "KÃ­ch hoáº¡t cÆ¡ cháº¿ sinh tÃ i liá»u giáº£ Äá»nh HyDE Äá» tÄng Äá» chÃ­nh xÃ¡c tÃ¬m kiáº¿m",
+                                                                                                   "default":  true
+                                                                                               },
+                                                                               "temperature":  {
+                                                                                                   "type":  "number",
+                                                                                                   "maximum":  1.0,
+                                                                                                   "minimum":  0.0,
+                                                                                                   "title":  "Temperature",
+                                                                                                   "description":  "Nhiá»t Äá» sinh vÄn báº£n cho LLM backend",
+                                                                                                   "default":  0.2
+                                                                                               },
+                                                                               "allow_external":  {
+                                                                                                      "type":  "boolean",
+                                                                                                      "title":  "Allow External",
+                                                                                                      "description":  "Chá» cho phÃ©p tra cá»©u nguá»n ngoÃ i khi ngÆ°á»i dÃ¹ng chá»§ Äá»ng Äá»ng Ã½",
+                                                                                                      "default":  false
+                                                                                                  }
+                                                                           },
+                                                            "type":  "object",
+                                                            "required":  [
+                                                                             "query"
+                                                                         ],
+                                                            "title":  "QueryRequest"
+                                                        },
+                                       "RoutingPlanResult":  {
+                                                                 "properties":  {
+                                                                                    "selected_domain":  {
+                                                                                                            "type":  "string",
+                                                                                                            "title":  "Selected Domain",
+                                                                                                            "description":  "LÄ©nh vá»±c phÃ¡p lÃ½ ÄÆ°á»£c phÃ¢n loáº¡i"
+                                                                                                        },
+                                                                                    "routing_confidence":  {
+                                                                                                               "type":  "number",
+                                                                                                               "title":  "Routing Confidence",
+                                                                                                               "description":  "Äá» tá»± tin cá»§a thuáº­t toÃ¡n Äá»nh tuyáº¿n domain"
+                                                                                                           },
+                                                                                    "execution_plan":  {
+                                                                                                           "items":  {
+                                                                                                                         "additionalProperties":  true,
+                                                                                                                         "type":  "object"
+                                                                                                                     },
+                                                                                                           "type":  "array",
+                                                                                                           "title":  "Execution Plan",
+                                                                                                           "description":  "Káº¿ hoáº¡ch hÃ nh Äá»ng chi tiáº¿t dáº¡ng Äa bÆ°á»c (Planner Steps)"
+                                                                                                       },
+                                                                                    "target_tools":  {
+                                                                                                         "items":  {
+                                                                                                                       "type":  "string"
+                                                                                                                   },
+                                                                                                         "type":  "array",
+                                                                                                         "title":  "Target Tools",
+                                                                                                         "description":  "Danh sÃ¡ch cÃ¡c Agent Tools / Micro-services cáº§n kÃ­ch hoáº¡t"
+                                                                                                     }
+                                                                                },
+                                                                 "type":  "object",
+                                                                 "required":  [
+                                                                                  "selected_domain",
+                                                                                  "routing_confidence",
+                                                                                  "execution_plan",
+                                                                                  "target_tools"
+                                                                              ],
+                                                                 "title":  "RoutingPlanResult"
+                                                             },
+                                       "UserContext":  {
+                                                           "properties":  {
+                                                                              "user_id":  {
+                                                                                              "type":  "string",
+                                                                                              "title":  "User Id",
+                                                                                              "description":  "MÃ£ Äá»nh danh ngÆ°á»i dÃ¹ng há» thá»ng",
+                                                                                              "example":  "lawyer_expert_01"
+                                                                                          },
+                                                                              "role":  {
+                                                                                           "type":  "string",
+                                                                                           "title":  "Role",
+                                                                                           "description":  "Vai trÃ² ngÆ°á»i dÃ¹ng",
+                                                                                           "default":  "legal_consultant",
+                                                                                           "example":  "admin"
+                                                                                       },
+                                                                              "session_id":  {
+                                                                                                 "anyOf":  [
+                                                                                                               {
+                                                                                                                   "type":  "string"
+                                                                                                               },
+                                                                                                               {
+                                                                                                                   "type":  "null"
+                                                                                                               }
+                                                                                                           ],
+                                                                                                 "title":  "Session Id",
+                                                                                                 "description":  "MÃ£ phiÃªn lÃ m viá»c hiá»n táº¡i cá»§a user"
+                                                                                             }
+                                                                          },
+                                                           "type":  "object",
+                                                           "required":  [
+                                                                            "user_id"
+                                                                        ],
+                                                           "title":  "UserContext"
+                                                       },
+                                       "ValidationError":  {
+                                                               "properties":  {
+                                                                                  "loc":  {
+                                                                                              "items":  {
+                                                                                                            "anyOf":  [
+                                                                                                                          {
+                                                                                                                              "type":  "string"
+                                                                                                                          },
+                                                                                                                          {
+                                                                                                                              "type":  "integer"
+                                                                                                                          }
+                                                                                                                      ]
+                                                                                                        },
+                                                                                              "type":  "array",
+                                                                                              "title":  "Location"
+                                                                                          },
+                                                                                  "msg":  {
+                                                                                              "type":  "string",
+                                                                                              "title":  "Message"
+                                                                                          },
+                                                                                  "type":  {
+                                                                                               "type":  "string",
+                                                                                               "title":  "Error Type"
+                                                                                           },
+                                                                                  "input":  {
+                                                                                                "title":  "Input"
+                                                                                            },
+                                                                                  "ctx":  {
+                                                                                              "type":  "object",
+                                                                                              "title":  "Context"
+                                                                                          }
+                                                                              },
+                                                               "type":  "object",
+                                                               "required":  [
+                                                                                "loc",
+                                                                                "msg",
+                                                                                "type"
+                                                                            ],
+                                                               "title":  "ValidationError"
+                                                           }
+                                   }
+                   }
+}
