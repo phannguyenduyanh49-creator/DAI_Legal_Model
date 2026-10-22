@@ -467,12 +467,30 @@ class CoreAPIGateway:
                 selected_domain = routing_plan_result.selected_domain
                 available_domains = registry_service.list_all_domains()
 
-                # Orchestrator có thể trả về domain con chưa được đăng ký.
-                # Khi đó, dùng cấu hình pháp lý tổng quát legal_ai.
-                if selected_domain in available_domains:
-                    registry_domain_id = selected_domain
+                # Chỉ áp dụng policy từ domain đã đăng ký. Nếu router trả ID
+                # ngoài Registry, dùng legal_ai làm fallback xác định và ghi cảnh báo.
+                normalized_selected_domain = (
+                    selected_domain.strip().lower()
+                    if isinstance(selected_domain, str)
+                    else ""
+                )
+                normalized_available_domains = {
+                    domain.strip().lower()
+                    for domain in available_domains
+                    if isinstance(domain, str)
+                }
+
+                if normalized_selected_domain in normalized_available_domains:
+                    registry_domain_id = normalized_selected_domain
                 else:
                     registry_domain_id = "legal_ai"
+                    logger.warning(
+                        "[Domain Policy] request_id=%s unknown_domain=%r; "
+                        "fallback_domain=%s",
+                        request_id,
+                        selected_domain,
+                        registry_domain_id,
+                    )
 
                 domain_config = registry_service.get_domain_config(
                     registry_domain_id

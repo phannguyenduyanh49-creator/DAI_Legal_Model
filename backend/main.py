@@ -1,3 +1,4 @@
+from backend.domain_upload import router as domain_upload_router
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -89,7 +90,7 @@ def _safe_diagnostic_text(value: str, limit: int = _LOG_TEXT_LIMIT) -> str:
 app = FastAPI(
     title="DAI Legal Core API"
 )
-
+app.include_router(domain_upload_router)
 # =========================================================
 # SESSION / COOKIE
 # =========================================================
@@ -106,7 +107,7 @@ SESSION_COOKIE_SECURE = False  # True khi deploy HTTPS production
 # PROJECT BASE DIRECTORY
 # =========================================================
 
-BASE_DIR = r"D:\Prj\DAI-Legal-Model"
+BASE_DIR = r"F:\Projects\DAI_Legal_Model"
 
 
 # =========================================================
@@ -300,7 +301,7 @@ app.add_middleware(
 # CONFIG
 # =========================================================
 
-BASE_DIR = r"D:\Prj\DAI-Legal-Model"
+BASE_DIR = r"F:\Projects\DAI_Legal_Model"
 
 
 MCP_SERVER_PATH = os.path.join(
@@ -1739,6 +1740,145 @@ def build_context(
     return combined
 
 
+
+# =========================================================
+# MULTI-DOMAIN RETRIEVAL
+# =========================================================
+
+TOURISM_KEYWORDS = {
+    "du lich", "du lịch", "khach san", "khách sạn", "resort",
+    "homestay", "diem den", "điểm đến", "tham quan", "lich trinh",
+    "lịch trình", "ve may bay", "vé máy bay", "tour", "am thuc",
+    "ẩm thực", "phuot", "phượt", "di chuyen", "di chuyển",
+}
+
+
+def detect_domain_id(question: str, requested_domain: str | None = None) -> str:
+    """Resolve an explicit domain first; otherwise detect tourism and default to legal."""
+    requested = str(requested_domain or "").strip().lower()
+    if requested:
+        if requested in {"legal", "legal_ai", "law"}:
+            return "legal_ai"
+        return re.sub(r"[^a-z0-9_]", "_", requested)
+
+    normalized = normalize_vietnamese(question)
+    tourism_terms = {normalize_vietnamese(term) for term in TOURISM_KEYWORDS}
+    if any(term and term in normalized for term in tourism_terms):
+        return "tourism"
+    return "legal_ai"
+
+
+async def search_domain_data(
+    question: str,
+    domain_id: str,
+    limit: int = 5,
+) -> dict:
+    """Search an isolated domain collection without legal procedure filters."""
+    safe_domain_id = re.sub(r"[^a-z0-9_]", "_", domain_id.strip().lower())
+    collection_name = f"domain_{safe_domain_id}_bge_m3"
+
+    exists = await asyncio.to_thread(
+        qdrant_client.collection_exists,
+        collection_name=collection_name,
+    )
+    if not exists:
+        return {
+            "domain_id": safe_domain_id,
+            "collection": collection_name,
+            "contexts": [],
+            "retrieved_count": 0,
+            "status": "collection_not_found",
+        }
+
+    query_vector = await asyncio.to_thread(
+        embedding_model.encode,
+        question,
+        normalize_embeddings=True,
+    )
+    response = await asyncio.to_thread(
+        qdrant_client.query_points,
+        collection_name=collection_name,
+        query=query_vector.tolist(),
+        limit=max(1, min(int(limit), 20)),
+        with_payload=True,
+    )
+
+    contexts = []
+    for point in response.points:
+        payload = point.payload or {}
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            continue
+        contexts.append({
+            "text": text,
+            "score": float(point.score or 0.0),
+            "source": str(payload.get("source", "")).strip(),
+            "row": payload.get("row"),
+            "domain_id": safe_domain_id,
+        })
+
+    return {
+        "domain_id": safe_domain_id,
+        "collection": collection_name,
+        "contexts": contexts,
+        "retrieved_count": len(contexts),
+        "status": "completed",
+    }
+
+
+async def generate_domain_answer(question: str, domain_id: str, request_id: str) -> str:
+    """Generate a non-legal-domain answer grounded only in its retrieved records."""
+    result = await search_domain_data(question, domain_id)
+    contexts = result.get("contexts", [])
+
+    if not contexts:
+        if result.get("status") == "collection_not_found":
+            return (
+                f"Domain '{domain_id}' chưa có collection dữ liệu "
+                f"({result.get('collection')}). Hãy tải Excel và lập chỉ mục cho domain này trước."
+            )
+        return "Mình chưa tìm thấy dữ liệu phù hợp trong kho dữ liệu của domain này."
+
+    evidence_blocks = []
+    for index, item in enumerate(contexts, start=1):
+        source = item.get("source") or "Không rõ"
+        row = item.get("row")
+        location = f", dòng Excel {row}" if row is not None else ""
+        evidence_blocks.append(
+            f"[Nguồn {index}: {source}{location}; điểm truy xuất {item['score']:.3f}]\n"
+            f"{item['text']}"
+        )
+
+    prompt = (
+        "Bạn là trợ lý hỏi đáp theo dữ liệu của một domain không phải pháp lý.\n"
+        "Chỉ trả lời dựa trên CONTEXT bên dưới. Không tự bịa dữ kiện, giá, địa chỉ "
+        "hoặc lịch trình. Nếu dữ liệu không đủ, hãy nói rõ phần nào chưa có dữ liệu. "
+        "Nêu nguồn/dòng Excel khi có thể. Trả lời bằng tiếng Việt.\n\n"
+        f"DOMAIN: {domain_id}\n"
+        f"CÂU HỎI: {question}\n\n"
+        "CONTEXT:\n" + "\n\n".join(evidence_blocks)
+    )
+
+    async with httpx.AsyncClient() as client:
+        response = await post_model_generation(
+            client=client,
+            url=MODEL_API_URL,
+            prompt=prompt,
+            request_id=request_id,
+            citation_attempt=1,
+            max_new_tokens=768,
+            timeout_seconds=180.0,
+        )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    answer = payload.get("answer") if isinstance(payload, dict) else None
+    if not isinstance(answer, str) or not answer.strip():
+        return "Model chưa trả về câu trả lời hợp lệ cho dữ liệu domain."
+    return answer.strip()
+
+
 # =========================================================
 # CHAT API
 # =========================================================
@@ -1771,66 +1911,84 @@ async def chat_completions(
             "prompt",
             ""
         )
-    ).strip()
-        # ============================================================
-    # DIRECT CATALOG
+    ).strip()    # ============================================================
+    # DOMAIN ROUTING + OPTIONAL DIRECT CATALOG
     # ============================================================
-
-    catalog_query = CatalogQuery(
-        domain="legal",
-        intent="procedure_lookup",
-        procedure_name=question,
-    )
-
-    catalog_started_at = time.perf_counter()
-    catalog_result, catalog_lookup_status = catalog_service.lookup_optional(
-        catalog_query
-    )
-    catalog_lookup_duration_ms = round(
-        (time.perf_counter() - catalog_started_at) * 1000, 2
-    )
-    if catalog_lookup_status == "unavailable":
-        print(
-            "[CATALOG LOOKUP]",
-            "request_id=", request_id,
-            "status=unavailable",
-            "reason=database_operational_error",
-        )
-    elif catalog_result is None:
-        catalog_lookup_status = "unknown"
-        print(
-            "[CATALOG LOOKUP]",
-            "request_id=", request_id,
-            "status=unknown",
-            "reason=result_missing",
-        )
-    else:
-        catalog_lookup_status = "matched" if catalog_result.matched else "no_match"
-
+    # Catalog chỉ dành cho luồng pháp lý. Không gọi catalog pháp lý
+    # với câu hỏi du lịch hoặc domain không phải pháp lý.
+    domain_id = detect_domain_id(question, data.get("domain_id"))
+    catalog_result = None
     catalog_evidences = []
+    catalog_lookup_duration_ms = 0.0
 
-    if catalog_result is not None and catalog_result.matched and catalog_result.record:
-        catalog_evidence = catalog_record_to_evidence(
-            catalog_result.record
+    if domain_id == "legal_ai":
+        catalog_query = CatalogQuery(
+            domain="legal",
+            intent="procedure_lookup",
+            procedure_name=question,
         )
-        catalog_evidences.append(catalog_evidence)
+        catalog_started_at = time.perf_counter()
+        catalog_result, catalog_lookup_status = catalog_service.lookup_optional(
+            catalog_query
+        )
+        catalog_lookup_duration_ms = round(
+            (time.perf_counter() - catalog_started_at) * 1000, 2
+        )
 
+        if catalog_lookup_status == "unavailable":
+            print(
+                "[CATALOG LOOKUP]",
+                "request_id=", request_id,
+                "status=unavailable",
+                "reason=database_operational_error",
+            )
+        elif catalog_result is None:
+            catalog_lookup_status = "unknown"
+            print(
+                "[CATALOG LOOKUP]",
+                "request_id=", request_id,
+                "status=unknown",
+                "reason=result_missing",
+            )
+        else:
+            catalog_lookup_status = (
+                "matched" if catalog_result.matched else "no_match"
+            )
+
+        if (
+            catalog_result is not None
+            and catalog_result.matched
+            and catalog_result.record
+        ):
+            catalog_evidence = catalog_record_to_evidence(
+                catalog_result.record
+            )
+            catalog_evidences.append(catalog_evidence)
+            print(
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=catalog_lookup",
+                "status=matched",
+                "evidence_count=1",
+                "duration_ms=", catalog_lookup_duration_ms,
+            )
+        elif catalog_result is not None:
+            print(
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=catalog_lookup",
+                "status=no_match",
+                "evidence_count=0",
+                "duration_ms=", catalog_lookup_duration_ms,
+            )
+    else:
+        catalog_lookup_status = "skipped_non_legal_domain"
         print(
-            "[PIPELINE STAGE]",
+            "[CATALOG LOOKUP]",
             "request_id=", request_id,
-            "stage=catalog_lookup",
-            "status=matched",
-            "evidence_count=1",
-            "duration_ms=", catalog_lookup_duration_ms,
-        )
-    elif catalog_result is not None:
-        print(
-            "[PIPELINE STAGE]",
-            "request_id=", request_id,
-            "stage=catalog_lookup",
-            "status=no_match",
-            "evidence_count=0",
-            "duration_ms=", catalog_lookup_duration_ms,
+            "status=skipped",
+            "domain_id=", domain_id,
+            "reason=non_legal_domain",
         )
 
     # =====================================================
@@ -1987,6 +2145,78 @@ async def chat_completions(
             "user",
             question
         )
+
+        # -------------------------------------------------
+        # MULTI-DOMAIN BRANCH: non-legal domains use their
+        # own Qdrant collection and never enter legal MCP.
+        # -------------------------------------------------
+        domain_id = detect_domain_id(question, data.get("domain_id"))
+        if domain_id != "legal_ai":
+            pipeline_state["domain_id"] = domain_id
+            pipeline_state["retrieval"] = "domain_retrieval"
+            pipeline_state["stage_status"]["retrieval"] = "started"
+
+            yield "event: status\n"
+            yield "data: " + json.dumps(
+                {"status": "searching_domain_data", "domain_id": domain_id},
+                ensure_ascii=False,
+            ) + "\n\n"
+
+            try:
+                domain_answer = await generate_domain_answer(
+                    question=question,
+                    domain_id=domain_id,
+                    request_id=request_id,
+                )
+                pipeline_state["retrieval"] = "completed"
+                pipeline_state["stage_status"]["retrieval"] = "completed"
+                pipeline_state["model_api"] = "completed"
+                pipeline_state["stage_status"]["model_api"] = "completed"
+                save_message(session_id, "assistant", domain_answer)
+
+                yield "event: chunk\n"
+                yield "data: " + json.dumps(
+                    {"delta": domain_answer, "session_id": session_id},
+                    ensure_ascii=False,
+                ) + "\n\n"
+                yield "event: done\n"
+                yield "data: " + json.dumps(
+                    {
+                        "status": "done",
+                        "verifier": "not_required",
+                        "verifier_scope": "domain_grounded_context",
+                        "pipeline": pipeline_state,
+                    },
+                    ensure_ascii=False,
+                ) + "\n\n"
+            except Exception as exc:
+                print(
+                    "[MULTI-DOMAIN ERROR]",
+                    "request_id=", request_id,
+                    "domain_id=", domain_id,
+                    "exception_type=", type(exc).__name__,
+                )
+                error_message = (
+                    "Đã xảy ra lỗi khi truy xuất hoặc trả lời bằng dữ liệu domain. "
+                    "Kiểm tra log Core API để xem chi tiết."
+                )
+                save_message(session_id, "assistant", error_message)
+                yield "event: chunk\n"
+                yield "data: " + json.dumps(
+                    {"delta": error_message, "session_id": session_id},
+                    ensure_ascii=False,
+                ) + "\n\n"
+                yield "event: done\n"
+                yield "data: " + json.dumps(
+                    {
+                        "status": "error",
+                        "verifier": "not_required",
+                        "verifier_scope": "domain_grounded_context",
+                        "pipeline": pipeline_state,
+                    },
+                    ensure_ascii=False,
+                ) + "\n\n"
+            return
 
         # -------------------------------------------------
         # USER TỪ CHỐI TRA CỨU BÊN NGOÀI

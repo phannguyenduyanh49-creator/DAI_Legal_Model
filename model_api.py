@@ -1,641 +1,302 @@
 import os
-import json
+import time
+import hashlib
+import logging
+from pathlib import Path
+from typing import Optional
+
 import torch
-
-from fastapi import FastAPI
-from pydantic import BaseModel
-
+import uvicorn
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
 )
-
 from peft import PeftModel
 
+# ============================================================
+# CONFIG
+# ============================================================
 
-# =========================================================
-# 1. CẤU HÌNH
-# =========================================================
+PROJECT_DIR = Path(__file__).resolve().parent
+BASE_MODEL = os.getenv("BASE_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
-BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+# Override with $env:LORA_MODEL="D:\\path\\to\\adapter" if needed.
+# The default matches the project folder layout on this machine.
+DEFAULT_LORA = PROJECT_DIR / "outputs" / "qwen-legal-lora-v4"
+LORA_MODEL = Path(os.getenv("LORA_MODEL", str(DEFAULT_LORA))).expanduser()
 
+HOST = os.getenv("MODEL_API_HOST", "0.0.0.0")
+PORT = int(os.getenv("MODEL_API_PORT", "8001"))
+LOAD_IN_4BIT = os.getenv("LOAD_IN_4BIT", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+MAX_INPUT_TOKENS = int(os.getenv("MAX_INPUT_TOKENS", "8192"))
 
-# =========================================================
-# 2. TỰ NHẬN DIỆN MÔI TRƯỜNG
-# =========================================================
-
-if os.path.exists("/app"):
-    # Docker / Linux
-    PROJECT_DIR = "/app"
-
-    HF_HOME = "/root/.cache/huggingface"
-
-    HF_CACHE = "/root/.cache/huggingface/hub"
-
-else:
-    # Windows
-    PROJECT_DIR = os.path.dirname(
-        os.path.abspath(__file__)
-    )
-
-    HF_HOME = r"D:\AI\HuggingFace"
-
-    HF_CACHE = r"D:\AI\HuggingFace\hub"
-
-
-os.environ["HF_HOME"] = HF_HOME
-os.environ["HF_HUB_CACHE"] = HF_CACHE
-
-
-# =========================================================
-# 3. ĐƯỜNG DẪN LORA
-# =========================================================
-
-FALLBACK_LORA = os.path.join(
-    PROJECT_DIR,
-    "outputs",
-    "qwen-legal-lora-v3"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
-
-REGISTRY_FILE = os.path.join(
-    PROJECT_DIR,
-    "outputs",
-    "active",
-    "registry.json"
-)
-
-
-# =========================================================
-# 4. ACTIVE ADAPTER
-# =========================================================
-
-def get_active_adapter():
-
-    print("\n" + "=" * 60)
-    print("AUTO MODEL REGISTRY")
-    print("=" * 60)
-
-    print(
-        "Project:",
-        PROJECT_DIR
-    )
-
-    print(
-        "Registry:",
-        REGISTRY_FILE
-    )
-
-    print(
-        "Fallback:",
-        FALLBACK_LORA
-    )
-
-    # -----------------------------------------------------
-    # Registry không tồn tại
-    # -----------------------------------------------------
-
-    if not os.path.exists(REGISTRY_FILE):
-
-        print(
-            "Registry không tồn tại."
-        )
-
-        print(
-            "Fallback → V3"
-        )
-
-        return FALLBACK_LORA
-
-
-    # -----------------------------------------------------
-    # Đọc registry
-    # -----------------------------------------------------
-
-    try:
-
-        with open(
-            REGISTRY_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            registry = json.load(f)
-
-    except Exception as e:
-
-        print(
-            "Không đọc được registry:",
-            e
-        )
-
-        print(
-            "Fallback → V3"
-        )
-
-        return FALLBACK_LORA
-
-
-    status = registry.get(
-        "status",
-        "unknown"
-    )
-
-    active_adapter = registry.get(
-        "active_adapter"
-    )
-
-
-    print(
-        "Registry status:",
-        status
-    )
-
-    print(
-        "Registry adapter:",
-        active_adapter
-    )
-
-
-    # -----------------------------------------------------
-    # Không có adapter
-    # -----------------------------------------------------
-
-    if not active_adapter:
-
-        print(
-            "Registry không có active_adapter."
-        )
-
-        print(
-            "Fallback → V3"
-        )
-
-        return FALLBACK_LORA
-
-
-    # -----------------------------------------------------
-    # QUAN TRỌNG:
-    # Registry được tạo trên Windows có thể dùng "\"
-    #
-    # Docker Linux cần "/"
-    # -----------------------------------------------------
-
-    active_adapter = active_adapter.replace(
-        "\\",
-        "/"
-    )
-
-
-    # -----------------------------------------------------
-    # Relative path → absolute path
-    # -----------------------------------------------------
-
-    if not os.path.isabs(
-        active_adapter
-    ):
-
-        active_adapter = os.path.join(
-            PROJECT_DIR,
-            active_adapter
-        )
-
-
-    active_adapter = os.path.normpath(
-        active_adapter
-    )
-
-
-    # -----------------------------------------------------
-    # Kiểm tra adapter
-    # -----------------------------------------------------
-
-    adapter_file = os.path.join(
-        active_adapter,
-        "adapter_model.safetensors"
-    )
-
-    config_file = os.path.join(
-        active_adapter,
-        "adapter_config.json"
-    )
-
-
-    if not os.path.exists(
-        adapter_file
-    ):
-
-        print(
-            "Active adapter không tồn tại:"
-        )
-
-        print(
-            active_adapter
-        )
-
-        print(
-            "Fallback → V3"
-        )
-
-        return FALLBACK_LORA
-
-
-    if not os.path.exists(
-        config_file
-    ):
-
-        print(
-            "adapter_config.json không tồn tại:"
-        )
-
-        print(
-            active_adapter
-        )
-
-        print(
-            "Fallback → V3"
-        )
-
-        return FALLBACK_LORA
-
-
-    # -----------------------------------------------------
-    # ACTIVE
-    # -----------------------------------------------------
-
-    print(
-        "ACTIVE ADAPTER:"
-    )
-
-    print(
-        active_adapter
-    )
-
-    return active_adapter
-
-
-# =========================================================
-# 5. ACTIVE LORA
-# =========================================================
-
-LORA_MODEL = get_active_adapter()
-
-
-# =========================================================
-# 6. FASTAPI
-# =========================================================
+logger = logging.getLogger("dai-model-api")
+
+# ============================================================
+# APP / REQUEST
+# ============================================================
 
 app = FastAPI(
-    title="DAI Legal Model API"
+    title="DAI Legal Model API",
+    description="Qwen2.5-7B-Instruct with optional LoRA adapter",
+    version="1.1",
 )
 
 
-# =========================================================
-# 7. REQUEST
-# =========================================================
-
-class ChatRequest(BaseModel):
-
-    prompt: str
+class GenerateRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+    max_new_tokens: int = Field(default=512, ge=1, le=2048)
 
 
-# =========================================================
-# 8. GPU CHECK
-# =========================================================
+# ============================================================
+# MODEL STATE
+# ============================================================
 
-print("\n" + "=" * 60)
-print("GPU CHECK")
-print("=" * 60)
+tokenizer = None
+model = None
+active_adapter: Optional[str] = None
+model_loaded = False
 
-print(
-    "CUDA:",
-    torch.cuda.is_available()
-)
 
-if not torch.cuda.is_available():
+def load_model() -> None:
+    """Load base Qwen and load LoRA only when a valid local adapter config exists."""
+    global tokenizer, model, active_adapter, model_loaded
 
-    raise RuntimeError(
-        "Không tìm thấy CUDA."
+    logger.info("=" * 60)
+    logger.info("DAI MODEL API - MODEL LOADING")
+    logger.info("Project: %s", PROJECT_DIR)
+    logger.info("Base model: %s", BASE_MODEL)
+    logger.info("Configured LoRA path: %s", LORA_MODEL)
+    logger.info("CUDA available: %s", torch.cuda.is_available())
+
+    if torch.cuda.is_available():
+        for idx in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(idx)
+            logger.info(
+                "GPU %s: %s (%.2f GB VRAM)",
+                idx,
+                torch.cuda.get_device_name(idx),
+                props.total_memory / (1024 ** 3),
+            )
+
+    adapter_config = LORA_MODEL / "adapter_config.json"
+    adapter_weights = LORA_MODEL / "adapter_model.safetensors"
+    adapter_weights_bin = LORA_MODEL / "adapter_model.bin"
+    adapter_exists = (
+        adapter_config.is_file()
+        and (adapter_weights.is_file() or adapter_weights_bin.is_file())
     )
 
-
-print(
-    "GPU:",
-    torch.cuda.get_device_name(0)
-)
-
-
-vram = (
-    torch.cuda.get_device_properties(0).total_memory
-    / 1024**3
-)
-
-
-print(
-    f"VRAM: {vram:.1f} GB"
-)
-
-
-# =========================================================
-# 9. 4-BIT QUANTIZATION
-# =========================================================
-
-bnb_config = BitsAndBytesConfig(
-
-    load_in_4bit=True,
-
-    bnb_4bit_quant_type="nf4",
-
-    bnb_4bit_compute_dtype=torch.bfloat16,
-
-    bnb_4bit_use_double_quant=True,
-)
-
-
-# =========================================================
-# 10. LOAD TOKENIZER
-# =========================================================
-
-print("\n" + "=" * 60)
-print("LOADING TOKENIZER")
-print("=" * 60)
-
-tokenizer = AutoTokenizer.from_pretrained(
-
-    BASE_MODEL,
-
-    cache_dir=HF_CACHE,
-)
-
-
-if tokenizer.pad_token is None:
-
-    tokenizer.pad_token = tokenizer.eos_token
-
-
-# =========================================================
-# 11. LOAD BASE MODEL
-# =========================================================
-
-print("\n" + "=" * 60)
-print("LOADING QWEN2.5-7B")
-print("=" * 60)
-
-model = AutoModelForCausalLM.from_pretrained(
-
-    BASE_MODEL,
-
-    quantization_config=bnb_config,
-
-    device_map="auto",
-
-    cache_dir=HF_CACHE,
-)
-
-
-print(
-    "Base model loaded."
-)
-
-
-# =========================================================
-# 12. LOAD ACTIVE LORA
-# =========================================================
-
-print("\n" + "=" * 60)
-print("LOADING ACTIVE LORA")
-print("=" * 60)
-
-print(
-    "Adapter:",
-    LORA_MODEL
-)
-
-
-model = PeftModel.from_pretrained(
-
-    model,
-
-    LORA_MODEL,
-)
-
-
-model.eval()
-
-
-print(
-    "Active LoRA loaded successfully."
-)
-
-
-# =========================================================
-# 13. MODEL INFO
-# =========================================================
-
-print("\n" + "=" * 60)
-print("MODEL READY")
-print("=" * 60)
-
-print(
-    "Base:",
-    BASE_MODEL
-)
-
-print(
-    "LoRA:",
-    LORA_MODEL
-)
-
-print(
-    "Registry:",
-    REGISTRY_FILE
-)
-
-
-# =========================================================
-# 14. HÀM INFERENCE
-# =========================================================
-
-def ask_model(
-    question: str
-):
-
-    messages = [
-
-        {
-            "role": "system",
-
-            "content": (
-                "Bạn là trợ lý hỗ trợ "
-                "tra cứu thủ tục hành chính. "
-                "Trả lời ngắn gọn và rõ ràng. "
-                "Chỉ cung cấp thông tin "
-                "liên quan đến câu hỏi."
-            ),
-        },
-
-        {
-            "role": "user",
-
-            "content": question,
-        },
-
-    ]
-
-
-    prompt = tokenizer.apply_chat_template(
-
-        messages,
-
-        tokenize=False,
-
-        add_generation_prompt=True,
-    )
-
-
-    inputs = tokenizer(
-
-        prompt,
-
-        return_tensors="pt",
-    )
-
-
-    inputs = {
-
-        key: value.to(model.device)
-
-        for key, value in inputs.items()
-
-    }
-
-
-    with torch.no_grad():
-
-        outputs = model.generate(
-
-            **inputs,
-
-            max_new_tokens=384,
-
-            do_sample=False,
-
-            repetition_penalty=1.05,
-
-            pad_token_id=tokenizer.eos_token_id,
+    if adapter_exists:
+        logger.info("Valid LoRA adapter found: %s", LORA_MODEL)
+    else:
+        logger.warning(
+            "No complete local LoRA adapter found at %s. "
+            "Will load Qwen base model ONLY for testing.",
+            LORA_MODEL,
+        )
+        logger.warning(
+            "This is not the fine-tuned legal model. To use LoRA, set LORA_MODEL "
+            "to a directory containing adapter_config.json and adapter weights."
         )
 
-
-    input_length = (
-        inputs["input_ids"].shape[1]
+    logger.info("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        BASE_MODEL,
+        trust_remote_code=True,
     )
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    quantization_config = None
+    model_kwargs = {"device_map": "auto", "trust_remote_code": True}
+
+    if LOAD_IN_4BIT:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "4-bit loading is enabled but CUDA is unavailable. "
+                "Use a CUDA-enabled Python/PyTorch environment."
+            )
+        compute_dtype = (
+            torch.bfloat16
+            if torch.cuda.is_bf16_supported()
+            else torch.float16
+        )
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+        model_kwargs["quantization_config"] = quantization_config
+    else:
+        model_kwargs["torch_dtype"] = (
+            torch.float16 if torch.cuda.is_available() else torch.float32
+        )
+
+    logger.info("Loading base model...")
+    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, **model_kwargs)
+    logger.info("Base model loaded.")
+
+    if adapter_exists:
+        # If an adapter is present but invalid/incompatible, fail loudly rather
+        # than silently returning an un-fine-tuned model.
+        logger.info("Loading LoRA adapter...")
+        model = PeftModel.from_pretrained(
+            model,
+            str(LORA_MODEL.resolve()),
+            is_trainable=False,
+        )
+        active_adapter = str(LORA_MODEL.resolve())
+        logger.info("LoRA adapter loaded successfully.")
+    else:
+        active_adapter = None
+
+    model.eval()
+    model_loaded = True
+    logger.info("Model loaded. Active adapter: %s", active_adapter or "NONE (BASE ONLY)")
+    logger.info("=" * 60)
 
 
-    generated_tokens = outputs[
-
-        0
-
-    ][
-
-        input_length:
-
-    ]
+@app.on_event("startup")
+def startup_event() -> None:
+    load_model()
 
 
-    answer = tokenizer.decode(
-
-        generated_tokens,
-
-        skip_special_tokens=True,
-    )
-
-
-    return answer.strip()
-
-
-# =========================================================
-# 15. ROOT
-# =========================================================
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 @app.get("/")
 def root():
-
     return {
-
-        "status": "running",
-
+        "success": True,
+        "message": "DAI Legal Model API is running",
         "base_model": BASE_MODEL,
-
-        "active_adapter": LORA_MODEL,
-
-        "registry": REGISTRY_FILE,
-
+        "model_loaded": model_loaded,
+        "adapter_loaded": active_adapter is not None,
+        "adapter_path": active_adapter,
+        "warning": None if active_adapter else "Base model only; LoRA is not loaded.",
     }
 
 
-# =========================================================
-# 16. GENERATE
-# =========================================================
+@app.get("/health")
+def health():
+    return {
+        "success": model_loaded,
+        "model_loaded": model_loaded,
+        "base_model": BASE_MODEL,
+        "adapter_loaded": active_adapter is not None,
+    }
 
-def ask_model(prompt_text: str):
-    messages = [
-        {
-            "role": "user",
-            "content": prompt_text,
-        },
-    ]
 
-    prompt = tokenizer.apply_chat_template(
+# ============================================================
+# GENERATE
+# ============================================================
+
+@app.post("/generate")
+def generate(
+    request: GenerateRequest,
+    request_id: Optional[str] = Header(default=None, alias="X-Request-ID"),
+    citation_attempt: Optional[int] = Header(default=None, alias="X-Citation-Attempt"),
+):
+    if not model_loaded or model is None or tokenizer is None:
+        raise HTTPException(status_code=503, detail="Model is not loaded yet.")
+
+    started_at = time.perf_counter()
+    prompt = request.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt không được để trống")
+
+    has_evidence_section = "=== EVIDENCE ===" in prompt
+    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    logger.info(
+        "[MODEL API] request received: request_id=%s citation_attempt=%s "
+        "prompt_chars=%s prompt_sha256=%s has_evidence_section=%s",
+        request_id or "not_provided",
+        citation_attempt if citation_attempt is not None else "not_provided",
+        len(prompt),
+        prompt_sha256,
+        has_evidence_section,
+    )
+
+    messages = [{"role": "user", "content": prompt}]
+    formatted_prompt = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
     )
-
     inputs = tokenizer(
-        prompt,
+        formatted_prompt,
         return_tensors="pt",
+        truncation=True,
+        max_length=MAX_INPUT_TOKENS,
     )
 
-    inputs = {
-        key: value.to(model.device)
-        for key, value in inputs.items()
+    # Use the input-embedding device; this is safer than assuming model.device
+    # when device_map="auto" has dispatched the model across devices.
+    input_device = model.get_input_embeddings().weight.device
+    inputs = {key: value.to(input_device) for key, value in inputs.items()}
+    input_token_count = int(inputs["input_ids"].shape[1])
+
+    generation_started_at = time.perf_counter()
+    try:
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=request.max_new_tokens,
+                do_sample=False,
+                repetition_penalty=1.1,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+    except Exception as exc:
+        logger.exception(
+            "[MODEL API] generation failed: request_id=%s citation_attempt=%s "
+            "exception_type=%s elapsed_ms=%.2f",
+            request_id or "not_provided",
+            citation_attempt if citation_attempt is not None else "not_provided",
+            type(exc).__name__,
+            (time.perf_counter() - generation_started_at) * 1000,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model generation failed: {type(exc).__name__}",
+        ) from exc
+
+    generated_tokens = outputs[0][input_token_count:]
+    answer = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+    processing_time_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    output_token_count = int(generated_tokens.shape[0])
+
+    logger.info(
+        "[MODEL API] generation complete: request_id=%s input_tokens=%s "
+        "output_tokens=%s processing_time_ms=%s",
+        request_id or "not_provided",
+        input_token_count,
+        output_token_count,
+        processing_time_ms,
+    )
+    return {
+        "success": True,
+        "answer": answer,
+        "processing_time_ms": processing_time_ms,
+        "input_tokens": input_token_count,
+        "output_tokens": output_token_count,
+        "prompt_chars": len(prompt),
+        "evidence_section_detected": has_evidence_section,
+        "adapter_loaded": active_adapter is not None,
     }
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=384,
-            do_sample=False,
-            repetition_penalty=1.05,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    input_length = inputs["input_ids"].shape[1]
-    generated_tokens = outputs[0][input_length:]
-
-    answer = tokenizer.decode(
-        generated_tokens,
-        skip_special_tokens=True,
-    )
-
-    return answer.strip()
-
-
-
-# =========================================================
-# 17. RUN SERVER
-# =========================================================
 
 if __name__ == "__main__":
-
-    import uvicorn
-
-    uvicorn.run(
-
-        app,
-
-        host="0.0.0.0",
-
-        port=8001
-
-    )
+    uvicorn.run(app, host=HOST, port=PORT)
