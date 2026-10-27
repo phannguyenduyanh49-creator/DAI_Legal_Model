@@ -11,10 +11,14 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from backend.answer.diagnostics import classify_upstream_exception
+from backend.answer.reference_policy import (
+    classify_business_outcome,
+    reference_answer_failure_reason,
+)
 
 from backend import answer
 
@@ -54,12 +58,37 @@ class LegacyPipelineResult:
     pipeline: Dict[str, Any] = field(default_factory=dict)
     verifier_status: str = "not_reported"
     verifier_scope: str = "not_reported"
+    session_cookie_headers: List[str] = field(default_factory=list)
 
 
 UNVERIFIED_ANSWER_FALLBACK = (
     "Chua the dua ra cau tra loi phap ly du dieu kien "
     "kiem tra trich dan Evidence."
 )
+
+
+def _verification_fallback_message(reason_code: str | None) -> str:
+    """Return safe, user-facing copy aligned with the structured failure code."""
+    code = reason_code or ""
+    if code == "EVIDENCE_IDS_MISSING":
+        return (
+            "Hiện chưa có Evidence phù hợp để kiểm chứng câu trả lời; "
+            "hệ thống chưa tạo câu trả lời pháp lý."
+        )
+    if code.startswith(("MODEL_API_", "UPSTREAM_")):
+        return "Không thể hoàn tất sinh câu trả lời do lỗi dịch vụ mô hình. Vui lòng thử lại sau."
+    if code.startswith("CITATION_"):
+        return "Câu trả lời đã được giữ lại vì citation Evidence thiếu, sai định dạng hoặc không hợp lệ."
+    if code.startswith("CLAIM_GROUNDING_"):
+        return "Câu trả lời đã được giữ lại vì hệ thống chưa xác minh được các nhận định dựa trên Evidence."
+    if code.startswith("REFERENCE_ANSWER_ESSENTIAL_FACTS"):
+        return (
+            "Evidence hiá»‡n cÃ³ chÆ°a Ä‘á»§ cÃ¡c thÃ´ng tin thiáº¿t yáº¿u Ä‘á»ƒ "
+            "hiá»ƒn thá»‹ cÃ¢u tráº£ lá»i an toÃ n; cÃ¢u tráº£ lá»i Ä‘Ã£ Ä‘Æ°á»£c giá»¯ láº¡i."
+        )
+    if code.startswith("VERIFICATION_CONFIDENCE_"):
+        return "Câu trả lời đã được giữ lại vì chưa đạt điều kiện kiểm chứng độ tin cậy."
+    return UNVERIFIED_ANSWER_FALLBACK
 
 
 def _generation_token_limit() -> int:
@@ -70,52 +99,31 @@ def _generation_token_limit() -> int:
     return max(1, min(value, 512))
 
 
-def _citation_integrity_failure_reason(
-    result: "LegacyPipelineResult",
-) -> str | None:
-    """Return a stable diagnostic reason while preserving fail-closed checks."""
-    if result.verifier_status == "not_required":
-        if (
-            result.pipeline.get("citation_verification") == "not_required"
-            or result.pipeline.get("response_status") == "waiting_permission"
-        ):
-            return None
-        return "VERIFIER_NOT_PASSED"
-    citation_status = result.pipeline.get("citation_verification")
-    if citation_status in ("failed", "error"):
-        return "CITATION_VERIFICATION_NOT_PASSED"
-    threshold = result.pipeline.get("verification_threshold")
-    confidence_status = result.pipeline.get("confidence_status")
-    if threshold is not None and confidence_status != "passed":
-        return (
-            "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
-            if confidence_status == "not_verified"
-            else "VERIFICATION_CONFIDENCE_NOT_PASSED"
-        )
-    if result.verifier_status not in ("passed", "not_verified"):
-        return "VERIFIER_NOT_PASSED"
-    grounding_status = result.pipeline.get("claim_grounding_status")
-    if grounding_status != "passed":
-        return (
-            "CLAIM_GROUNDING_NOT_EVALUATED"
-            if grounding_status in (None, "not_evaluated")
-            else "CLAIM_GROUNDING_NOT_PASSED"
-        )
-    if result.pipeline.get("verification_status") != "passed":
-        return "VERIFICATION_NOT_PASSED"
-    if result.verifier_status != "passed":
-        return "VERIFIER_NOT_PASSED"
+def _valid_session_id(value: str | None) -> str | None:
+    """Forward only Core-generated UUID session identifiers to the Core API."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return str(uuid.UUID(value.strip()))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
+
+def _citation_link_failure_reason(result: "LegacyPipelineResult") -> str | None:
+    """Validate Evidence IDs, cited IDs, and citation text/telemetry consistency."""
     pipeline = result.pipeline
-    if citation_status != "passed":
-        return "CITATION_VERIFICATION_NOT_PASSED"
-
     evidence_ids = pipeline.get("evidence_ids")
     cited_ids = pipeline.get("cited_evidence_ids")
     if not isinstance(evidence_ids, list) or not evidence_ids:
         return "EVIDENCE_IDS_MISSING"
     if not isinstance(cited_ids, list) or not cited_ids:
         return "CITATION_TELEMETRY_MISMATCH"
+    if any(not isinstance(item, str) or not item.strip() for item in evidence_ids):
+        return "EVIDENCE_IDS_INVALID"
+    if len(set(evidence_ids)) != len(evidence_ids):
+        return "EVIDENCE_IDS_INVALID"
+    if any(not isinstance(item, str) or not item.strip() for item in cited_ids):
+        return "EVIDENCE_ID_INVALID"
     allowed = {item for item in evidence_ids if isinstance(item, str) and item}
     cited = {item for item in cited_ids if isinstance(item, str) and item}
     if not allowed:
@@ -124,21 +132,93 @@ def _citation_integrity_failure_reason(
         return "CITATION_TELEMETRY_MISMATCH"
     if not cited.issubset(allowed):
         return "EVIDENCE_ID_NOT_ALLOWED"
-
-    answer_citations = set(re.findall(
-        r"\[Evidence ID:\s*([^\]]+)\]",
-        result.answer,
-        flags=re.IGNORECASE,
-    ))
-    answer_citations = {item.strip() for item in answer_citations if item.strip()}
+    answer_citations = {
+        item.strip()
+        for item in re.findall(
+            r"\[Evidence ID:\s*([^\]]+)\]", result.answer, flags=re.IGNORECASE
+        )
+        if item.strip()
+    }
     if not answer_citations or answer_citations != cited:
         return "CITATION_TELEMETRY_MISMATCH"
+    return None
+
+
+def _citation_integrity_failure_reason(
+    result: "LegacyPipelineResult",
+) -> str | None:
+    """Return a stable diagnostic reason while preserving fail-closed checks."""
+    pipeline = result.pipeline
+    if result.verifier_status == "not_required":
+        if pipeline.get("response_status") == "waiting_permission":
+            return None
+        return "VERIFIER_NOT_PASSED"
+    evidence_ids = pipeline.get("evidence_ids")
+    allowed_evidence_ids = {
+        item for item in evidence_ids
+        if isinstance(item, str) and item.strip()
+    } if isinstance(evidence_ids, list) else set()
+    if (
+        not allowed_evidence_ids
+        and pipeline.get("failure_reason_code") in {
+            "EVIDENCE_IDS_MISSING", "CITATION_MISSING",
+        }
+        and pipeline.get("failure_stage") in {
+            "retrieval_pipeline", "evidence_builder", "prompt_assembly", "verifier",
+        }
+    ):
+        return "EVIDENCE_IDS_MISSING"
+    if pipeline.get("citation_verification") in ("failed", "error"):
+        return "CITATION_VERIFICATION_NOT_PASSED"
+    if result.verifier_status not in ("passed", "not_verified"):
+        return "VERIFIER_NOT_PASSED"
+    link_failure_reason = _citation_link_failure_reason(result)
+    if link_failure_reason:
+        return link_failure_reason
+
+    confidence_status = pipeline.get("confidence_status")
+    if pipeline.get("verification_threshold") is not None and confidence_status != "passed":
+        return (
+            "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
+            if confidence_status == "not_verified"
+            else "VERIFICATION_CONFIDENCE_NOT_PASSED"
+        )
+    grounding_status = pipeline.get("claim_grounding_status")
+    if grounding_status == "failed":
+        return "CLAIM_GROUNDING_NOT_PASSED"
+    if result.verifier_status not in ("passed", "not_verified"):
+        return "VERIFIER_NOT_PASSED"
+    if grounding_status != "passed":
+        return (
+            "CLAIM_GROUNDING_NOT_EVALUATED"
+            if grounding_status in (None, "not_evaluated")
+            else "CLAIM_GROUNDING_NOT_PASSED"
+        )
+    if pipeline.get("verification_status") != "passed":
+        return "VERIFICATION_NOT_PASSED"
+    if result.verifier_status != "passed":
+        return "VERIFIER_NOT_PASSED"
+    if pipeline.get("citation_verification") != "passed":
+        return "CITATION_VERIFICATION_NOT_PASSED"
     return None
 
 
 def _has_valid_citation_integrity(result: "LegacyPipelineResult") -> bool:
     """Compatibility wrapper for callers that only need the pass/fail value."""
     return _citation_integrity_failure_reason(result) is None
+
+
+def _business_outcome(
+    result: "LegacyPipelineResult",
+    answer_is_verified: bool,
+    answer_is_unverified_reference: bool = False,
+) -> str:
+    """Compatibility wrapper around the shared business-outcome policy."""
+    return classify_business_outcome(
+        result.pipeline,
+        answer_is_verified=answer_is_verified,
+        answer_is_unverified_reference=answer_is_unverified_reference,
+    )
 
 
 # ==============================================================================
@@ -173,6 +253,7 @@ class CoreAPIResponse(BaseModel):
     timestamp: str = Field(..., description="Thời gian ghi nhận phản hồi (UTC ISO format)")
     processing_time_ms: float = Field(..., description="Tổng thời gian xử lý của Gateway (tính bằng mili-giây)")
     status: str = Field(..., description="Trạng thái thực thi yêu cầu (SUCCESS / FAILED)")
+    outcome: str = Field(..., description="Business outcome independent of HTTP status")
     query_analysis: AnalysisResult = Field(..., description="Kết quả phân tích từ module Query Analysis")
     routing_and_planning: RoutingPlanResult = Field(..., description="Kết quả phân vùng domain và kế hoạch thực thi từ Orchestrator")
     next_step: str = Field(
@@ -222,7 +303,18 @@ class CoreAPIGateway:
         # Cấu hình CORS Middleware
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=["*"],
+            allow_origins=[
+                origin.strip()
+                for origin in os.getenv(
+                    "CORS_ALLOWED_ORIGINS",
+                    ",".join(
+                        f"http://{host}:{port}"
+                        for host in ("127.0.0.1", "localhost")
+                        for port in (5173, 5174, 5175)
+                    ),
+                ).split(",")
+                if origin.strip()
+            ],
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -256,6 +348,7 @@ class CoreAPIGateway:
         request_id: str,
         policy_domain: str,
         allowed_mcp_tools: list[str],
+        session_id: str | None = None,
     ) -> LegacyPipelineResult:
         """Gọi Core API cũ để tái sử dụng pipeline Retrieval/Evidence/Prompt/Qwen."""
         payload = {
@@ -277,13 +370,16 @@ class CoreAPIGateway:
             len(query),
         )
         try:
+            request_headers = {"X-Request-ID": request_id}
+            if session_id:
+                request_headers["Cookie"] = f"session_id={session_id}"
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout_seconds)
             ) as client:
                 response = await client.post(
                     self.legacy_api_url,
                     json=payload,
-                    headers={"X-Request-ID": request_id},
+                    headers=request_headers,
                 )
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
             logger.info(
@@ -357,6 +453,11 @@ class CoreAPIGateway:
                 answer_parts.append(delta)
             if isinstance(event_data.get("pipeline"), dict):
                 pipeline_metadata = event_data["pipeline"]
+            if event_data.get("outcome") in {
+                "answered", "answered_unverified", "needs_clarification",
+                "withheld", "verification_failed",
+            }:
+                pipeline_metadata["response_outcome"] = event_data["outcome"]
             if event_data.get("status") == "waiting_permission":
                 pipeline_metadata["response_status"] = "waiting_permission"
             if isinstance(event_data.get("verifier"), str):
@@ -376,6 +477,11 @@ class CoreAPIGateway:
                         answer = answer_value.strip()
                     if isinstance(result.get("pipeline"), dict):
                         pipeline_metadata = result["pipeline"]
+                    if result.get("outcome") in {
+                        "answered", "answered_unverified", "needs_clarification",
+                        "withheld", "verification_failed",
+                    }:
+                        pipeline_metadata["response_outcome"] = result["outcome"]
                     if result.get("status") == "waiting_permission":
                         pipeline_metadata["response_status"] = "waiting_permission"
                     if isinstance(result.get("verifier"), str):
@@ -399,14 +505,64 @@ class CoreAPIGateway:
                 },
             )
 
+        get_all_headers = getattr(response.headers, "get_list", None)
+        upstream_set_cookies = (
+            get_all_headers("set-cookie")
+            if callable(get_all_headers)
+            else [response.headers.get("set-cookie", "")]
+        )
         return LegacyPipelineResult(
             answer=answer,
             pipeline=pipeline_metadata,
             verifier_status=verifier_status,
             verifier_scope=verifier_scope,
+            session_cookie_headers=[
+                value
+                for value in upstream_set_cookies
+                if value
+                if value.partition("=")[0].strip() == "session_id"
+            ],
         )
 
     def _register_middleware_and_routes(self):
+        @self.app.post("/api/v2/domains/{domain_id}/documents", tags=["Domain Documents"])
+        async def upload_domain_document(domain_id: str, file: UploadFile = File(...)):
+            try:
+                registry_service.get_domain_config(domain_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Unknown domain") from exc
+
+            content = await file.read(2 * 1024 * 1024 + 1)
+            filename = file.filename or "document.txt"
+            content_type = file.content_type or "application/octet-stream"
+            await file.close()
+            legacy_base_url = self.legacy_api_url.removesuffix(
+                "/api/v1/chat/completions"
+            )
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+                    upstream = await client.post(
+                        f"{legacy_base_url}/api/v1/domains/{domain_id}/documents",
+                        files={"file": (filename, content, content_type)},
+                    )
+            except httpx.HTTPError as exc:
+                logger.error(
+                    "[DOMAIN DOCUMENT UPLOAD] domain_id=%s status=failed exception_type=%s",
+                    domain_id,
+                    type(exc).__name__,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail="Domain document service is unavailable",
+                ) from exc
+            if not upstream.is_success:
+                try:
+                    detail = upstream.json().get("detail", "Upload rejected")
+                except (ValueError, AttributeError):
+                    detail = "Upload rejected"
+                raise HTTPException(status_code=upstream.status_code, detail=detail)
+            return upstream.json()
+
         # Middleware đo lường hiệu năng thực thi (Latency Measurement)
         @self.app.middleware("http")
         async def add_process_latency_header(request: Request, call_next):
@@ -428,7 +584,11 @@ class CoreAPIGateway:
 
         # Endpoint xử lý câu hỏi pháp lý chính thức qua 3 Module đầu tiên
         @self.app.post("/api/v2/legal-query", response_model=CoreAPIResponse, tags=["Core Legal Processing Pipeline"])
-        async def process_legal_consultation_query(request_payload: QueryRequest):
+        async def process_legal_consultation_query(
+            request_payload: QueryRequest,
+            request: Request,
+            response: Response,
+        ):
             start_time = time.perf_counter()
             request_id = f"trace_legal_{uuid.uuid4().hex}"
             pipeline_execution = {
@@ -466,6 +626,17 @@ class CoreAPIGateway:
             logger.info(f"==================================================")
 
             try:
+                if request_payload.domain_hint:
+                    try:
+                        self.policy_middleware.registry_domain_for(
+                            request_payload.domain_hint
+                        )
+                    except KeyError as exc:
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Requested domain is not registered",
+                        ) from exc
+
                 # BƯỚC 1: Gọi Module Query Analysis & Clarification (Thay thế Synonym Mapping)
                 stage_started_at = time.perf_counter()
                 analysis_result = self.query_analyzer.analyze(
@@ -508,7 +679,9 @@ class CoreAPIGateway:
 
                 policy_mode = domain_config.policy.mode
                 persona_instruction = (
-                    domain_config.persona.system_prompt_addition
+                    f"Reply tone: {domain_config.persona.tone}. "
+                    f"Language style: {domain_config.persona.language_style}. "
+                    f"{domain_config.persona.system_prompt_addition}"
                 )
 
                 system_instruction = (
@@ -549,7 +722,10 @@ class CoreAPIGateway:
                     request_id=request_id,
                     policy_domain=registry_domain_id,
                     allowed_mcp_tools=list(enforced_policy.allowed_mcp_tools),
+                    session_id=_valid_session_id(request.cookies.get("session_id")),
                 )
+                for cookie_header in legacy_result.session_cookie_headers:
+                    response.headers.append("set-cookie", cookie_header)
                 pipeline_execution["stage_durations_ms"]["legacy_api"] = round(
                     (time.perf_counter() - stage_started_at) * 1000, 2
                 )
@@ -558,23 +734,41 @@ class CoreAPIGateway:
                 for key in (
                     "catalog_lookup",
                     "retrieval",
+                    "retrieval_collection_status",
                     "reranking",
                     "evidence_builder",
                     "enough_data",
+                    "answer_data_sufficiency",
                     "required_fields",
                     "missing_fields",
+                    "answer_required_fields",
+                    "answer_missing_fields",
                     "external_fallback",
+                    "mcp_status",
+                    "mcp_raw_result_count",
+                    "mcp_mapped_evidence_count",
                     "prompt_assembly",
                     "model_api",
                     "citation_verification",
                     "confidence_status",
                     "confidence_score",
+                    "confidence_scorer_status",
+                    "confidence_reason",
+                    "confidence_reason_code",
                     "verification_threshold",
                     "claim_grounding_status",
+                    "grounding_scorer_status",
+                    "grounding_reason",
+                    "grounding_reason_code",
+                    "verification_outcome",
+                    "claim_verification_results",
                     "verification_status",
                     "citation_attempts",
+                    "citation_attempt_diagnostics",
+                    "raw_answer_debug_enabled",
                     "evidence_count",
                     "evidence_ids",
+                    "evidence_sources",
                     "cited_evidence_ids",
                     "model_processing_time_ms",
                     "model_api_elapsed_ms",
@@ -584,9 +778,12 @@ class CoreAPIGateway:
                     "failure_stage",
                     "failure_reason_code",
                     "exception_type",
+                    "cause_exception_type",
+                    "failure_component",
                     "upstream_status_code",
                     "verifier_reason_counts",
                     "stage_status",
+                    "response_status",
                 ):
                     if key in legacy_pipeline:
                         if key == "stage_durations_ms":
@@ -648,16 +845,66 @@ class CoreAPIGateway:
                 pipeline_execution.setdefault("stage_durations_ms", {})[
                     "gateway_citation_validation"
                 ] = round((time.perf_counter() - citation_check_started_at) * 1000, 2)
+                waiting_permission = (
+                    legacy_pipeline.get("response_status") == "waiting_permission"
+                )
+                citation_link_failure = _citation_link_failure_reason(legacy_result)
                 pipeline_execution.setdefault("stage_status", {})[
                     "gateway_citation_validation"
-                ] = "failed" if failure_reason_code else "passed"
-                answer_is_verified = failure_reason_code is None
+                ] = (
+                    "not_required" if waiting_permission
+                    else "failed" if citation_link_failure
+                    else "passed"
+                )
+                answer_is_verified = failure_reason_code is None and not waiting_permission
+                pipeline_execution["gateway_citation_failure_reason_code"] = (
+                    failure_reason_code
+                )
+                reference_failure_reason = (
+                    None
+                    if answer_is_verified
+                    else reference_answer_failure_reason(
+                        legacy_result.answer,
+                        legacy_pipeline,
+                        legacy_result.verifier_status,
+                    )
+                )
+                answer_is_unverified_reference = (
+                    not answer_is_verified and reference_failure_reason is None
+                )
+                pipeline_execution["core_response_outcome"] = legacy_pipeline.get(
+                    "response_outcome"
+                )
+                pipeline_execution["reference_answer_reason_code"] = (
+                    None if answer_is_unverified_reference else reference_failure_reason
+                )
+                response_outcome = classify_business_outcome(
+                    pipeline_execution,
+                    answer_is_verified=answer_is_verified,
+                    answer_is_unverified_reference=answer_is_unverified_reference,
+                )
+                pipeline_execution["response_outcome"] = response_outcome
+                pipeline_execution["core_gateway_outcome_match"] = (
+                    legacy_pipeline.get("response_outcome") == response_outcome
+                    if legacy_pipeline.get("response_outcome") is not None
+                    else None
+                )
                 answer_text = (
                     legacy_result.answer
-                    if answer_is_verified
-                    else UNVERIFIED_ANSWER_FALLBACK
+                    if answer_is_verified or answer_is_unverified_reference or waiting_permission
+                    else _verification_fallback_message(
+                        reference_failure_reason
+                        if reference_failure_reason
+                        and reference_failure_reason.startswith(
+                            "REFERENCE_ANSWER_ESSENTIAL_FACTS"
+                        )
+                        else legacy_pipeline.get("failure_reason_code")
+                        or failure_reason_code
+                    )
                 )
-                pipeline_execution["answer_withheld"] = not answer_is_verified
+                pipeline_execution["answer_withheld"] = not (
+                    answer_is_verified or answer_is_unverified_reference
+                )
                 if failure_reason_code:
                     core_failure_stage = legacy_pipeline.get("failure_stage")
                     core_failure_reason = legacy_pipeline.get("failure_reason_code")
@@ -702,6 +949,7 @@ class CoreAPIGateway:
                         if answer_is_verified
                         else "FAILED"
                     ),
+                    outcome=response_outcome,
                     query_analysis=analysis_result,
                     routing_and_planning=routing_plan_result,
                     next_step=(

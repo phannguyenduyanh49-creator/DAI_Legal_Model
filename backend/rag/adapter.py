@@ -23,18 +23,30 @@ def rag_result_to_evidence(
         or item.get("code")
         or f"rag:{procedure_name}"
     )
+    source_type = str(item.get("source_type") or "rag")
+    if source_type != "domain_upload":
+        evidence_id = (
+        item.get("evidence_id")
+        or item.get("formality_id")
+        or item.get("code")
+        or f"rag:{procedure_name}"
+        )
 
     return Evidence(
-        evidence_id=f"rag:{evidence_id}",
-        source_type="rag",
-        source_id=(
+        evidence_id=(
+            evidence_id
+            if source_type == "domain_upload"
+            else f"rag:{evidence_id}"
+        ),
+        source_type=source_type,
+        source_id=item.get("source_id") or (
             item.get("formality_id")
             or item.get("code")
         ),
         source_url=item.get("source_url"),
-        title=procedure_name,
+        title=item.get("title") or procedure_name,
         content=content,
-        location=None,
+        location=item.get("location"),
         score=(
             item.get("rerank_score")
             if item.get("rerank_score") is not None
@@ -43,6 +55,7 @@ def rag_result_to_evidence(
         validity_from=None,
         validity_to=None,
         metadata={
+            "domain_id": item.get("domain_id"),
             "retrieval_score": item.get("score"),
             "rerank_score": item.get("rerank_score"),
             "code": item.get("code"),

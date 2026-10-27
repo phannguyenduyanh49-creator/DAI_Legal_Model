@@ -150,11 +150,16 @@ def test_call_contract_checks_permission_and_normalizes_text():
             allowed_tools=set(), timeout_seconds=1,
         ))
 
+    stages = []
     result = asyncio.run(call_mcp_tool(
         Session(), "search_dichvucong", {"keyword": "hộ chiếu"},
         allowed_tools={"search_dichvucong"}, timeout_seconds=1,
+        on_stage=lambda stage, elapsed_ms: stages.append((stage, elapsed_ms)),
     ))
     assert result == "Tên thủ tục: Cấp hộ chiếu\nID: 123"
+    assert len(stages) == 1
+    assert stages[0][0] == "tool_call"
+    assert stages[0][1] >= 0
 
 
 def test_call_contract_timeout_and_mcp_error_result():

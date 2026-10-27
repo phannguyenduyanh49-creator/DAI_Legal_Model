@@ -2,6 +2,7 @@ from backend.evidence.schemas import Evidence
 from backend.evidence.builder import EvidenceBuilder
 from backend.rag.pipeline_policy import (
     build_catalog_fallback_after_retrieval_error,
+    check_evidence_sufficiency,
     choose_data_source,
 )
 
@@ -68,3 +69,29 @@ def test_policy_denial_prevents_permission_prompt_and_mcp_fallback():
 def test_insufficient_local_data_uses_external_only_after_opt_in():
     assert choose_data_source(True, False, False) == "local"
     assert choose_data_source(True, False, True) == "external"
+
+
+def test_missing_semantic_evaluator_does_not_trigger_mcp_when_local_data_is_sufficient():
+    # Evaluator availability is not an input to retrieval policy. Sufficient
+    # internal evidence remains the selected source even when external lookup
+    # was previously permitted for other requests.
+    assert choose_data_source(True, True, True) == "local"
+
+
+def test_final_mcp_evidence_can_satisfy_generic_full_text_but_not_missing_structured_facts():
+    evidence = Evidence(
+        evidence_id="mcp:dvc:123",
+        source_type="mcp",
+        title="Thủ tục hành chính",
+        content="Nội dung chi tiết thủ tục từ cổng dịch vụ công.",
+        score=1.0,
+    )
+    assert check_evidence_sufficiency("Thủ tục này thế nào?", [evidence]) == (
+        True, ["full_text"], []
+    )
+    enough, required, missing = check_evidence_sufficiency(
+        "Hồ sơ cần giấy tờ gì?", [evidence]
+    )
+    assert enough is False
+    assert required == ["profile_components"]
+    assert missing == ["profile_components"]

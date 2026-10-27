@@ -141,3 +141,32 @@ def test_detail_response_must_be_valid_and_match_selected_id():
     with pytest.raises(DVCUpstreamError, match="missing detail data"):
         validate_dvc_detail_response({"code": "OK", "data": {}}, "official-1")
 
+
+def test_real_qdrant_payload_titles_keep_both_long_qualified_lltp_procedures():
+    from backend.rag.relevance import procedure_relevance
+
+    query = "C\u1ea5p phi\u1ebfu l\u00fd l\u1ecbch t\u01b0 ph\u00e1p c\u1ea7n l\u00e0m g\u00ec?"
+    # Actual procedure_name/thu_tuc values from DVC rows 102075 and 102076.
+    titles = [
+        "C\u1ea5p Phi\u1ebfu l\u00fd l\u1ecbch t\u01b0 ph\u00e1p cho c\u00f4ng d\u00e2n Vi\u1ec7t Nam m\u00e0 kh\u00f4ng x\u00e1c \u0111\u1ecbnh \u0111\u01b0\u1ee3c n\u01a1i th\u01b0\u1eddng tr\u00fa ho\u1eb7c n\u01a1i t\u1ea1m tr\u00fa; ng\u01b0\u1eddi n\u01b0\u1edbc ngo\u00e0i \u0111\u00e3 c\u01b0 tr\u00fa t\u1ea1i Vi\u1ec7t Nam",
+        "C\u1ea5p Phi\u1ebfu L\u00fd l\u1ecbch t\u01b0 ph\u00e1p cho c\u00f4ng d\u00e2n Vi\u1ec7t Nam, ng\u01b0\u1eddi n\u01b0\u1edbc ngo\u00e0i \u0111ang c\u01b0 tr\u00fa t\u1ea1i Vi\u1ec7t Nam, ng\u01b0\u1eddi Vi\u1ec7t Nam \u0111ang c\u01b0 tr\u00fa \u1edf n\u01b0\u1edbc ngo\u00e0i",
+    ]
+    for title in titles:
+        result = procedure_relevance(query, title)
+        assert result["relevant"] is True
+        assert result["query_coverage"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Th\u1ee7 t\u1ee5c b\u1ed5 nhi\u1ec7m gi\u00e1m \u0111\u1ecbnh vi\u00ean t\u01b0 ph\u00e1p",
+        "\u0110\u0103ng k\u00fd khai t\u1eed",
+    ],
+)
+def test_lltp_query_does_not_accept_legal_examiner_or_death_registration(title):
+    from backend.rag.relevance import procedure_relevance
+
+    query = "C\u1ea5p phi\u1ebfu l\u00fd l\u1ecbch t\u01b0 ph\u00e1p c\u1ea7n l\u00e0m g\u00ec?"
+    assert procedure_relevance(query, title)["relevant"] is False
+

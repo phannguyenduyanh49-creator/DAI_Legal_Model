@@ -1,6 +1,10 @@
+import pytest
+
 from backend.mcp.adapter import mcp_dvc_result_to_evidence, mcp_result_status
 from backend.evidence.builder import EvidenceBuilder
 from backend.evidence.schemas import Evidence
+from backend.domain_documents import retrieval_collections_for_domain
+from backend.domain_registry import DomainRegistryService
 from backend.orchestrator import DomainRouterPlanner
 from backend.policy.middleware import PolicyEnforcementMiddleware
 from backend.query_analysis import AnalysisResult
@@ -39,7 +43,99 @@ def test_friendly_mode_is_reachable_through_domain_router_and_stays_allowlisted(
     policy = PolicyEnforcementMiddleware().apply(routing.selected_domain)
 
     assert policy.domain_config.policy.mode == "FRIENDLY"
+
+
+def test_tourism_domain_is_registered_and_unknown_domains_do_not_fall_back_to_legal():
+    routing = DomainRouterPlanner().process(
+        query_analysis=AnalysisResult(
+            original_query="Which shuttle leaves the pier?",
+            cleaned_query="Which shuttle leaves the pier?",
+            confidence_score=0.9,
+        ),
+        domain_hint="tourism",
+    )
+    assert routing.selected_domain == "tourism"
+    policy = PolicyEnforcementMiddleware().apply("tourism")
+    assert policy.domain_config.domain_id == "tourism"
     assert policy.allowed_mcp_tools == ()
+    with pytest.raises(KeyError):
+        PolicyEnforcementMiddleware().apply("unknown_domain")
+
+
+def test_frontend_legal_ai_hint_routes_to_the_same_registered_legal_domain():
+    routing = DomainRouterPlanner().process(
+        query_analysis=AnalysisResult(
+            original_query="What does the legal source say?",
+            cleaned_query="What does the legal source say?",
+            confidence_score=0.9,
+        ),
+        domain_hint="legal_ai",
+    )
+
+    assert routing.selected_domain == "legal_ai"
+    assert PolicyEnforcementMiddleware().apply(
+        routing.selected_domain
+    ).domain_config.domain_id == "legal_ai"
+
+
+def test_company_question_auto_routes_to_legal_and_stays_legal_with_stale_nonlegal_hint():
+    query = "Thủ tục thành lập công ty cổ phần là gì?"
+    analysis = AnalysisResult(
+        original_query=query,
+        cleaned_query=query,
+        confidence_score=0.9,
+    )
+    router = DomainRouterPlanner()
+    registry = DomainRegistryService()
+    middleware = PolicyEnforcementMiddleware(registry)
+
+    automatic = router.process(analysis)
+    assert automatic.selected_domain == "enterprise_law"
+    assert middleware.apply(automatic.selected_domain).domain_config.domain_id == "legal_ai"
+    assert middleware.apply(automatic.selected_domain).domain_config.knowledge_collection == "legal_docs_bge_m3"
+
+    stale_tourism = router.process(analysis, domain_hint="tourism")
+    assert stale_tourism.selected_domain == "enterprise_law"
+    assert middleware.apply(stale_tourism.selected_domain).domain_config.domain_id == "legal_ai"
+    assert middleware.apply(stale_tourism.selected_domain).domain_config.knowledge_collection == "legal_docs_bge_m3"
+
+    generic_analysis = AnalysisResult(
+        original_query="What time does the shuttle leave?",
+        cleaned_query="What time does the shuttle leave?",
+        confidence_score=0.9,
+    )
+    explicit_general = router.process(generic_analysis, domain_hint="general_assistant")
+    assert explicit_general.selected_domain == "general_assistant"
+    general_config = middleware.apply(explicit_general.selected_domain).domain_config
+    assert general_config.knowledge_collection is None
+    assert retrieval_collections_for_domain(
+        "general_assistant", lambda _name: False, registry
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Thủ tục thành lập công ty cổ phần là gì?",
+        "Hồ sơ đăng ký thành lập công ty cổ phần gồm những giấy tờ gì?",
+        "Công ty cổ phần khác công ty trách nhiệm hữu hạn ở điểm nào?",
+        "Thời hạn giải quyết hồ sơ đăng ký doanh nghiệp là bao lâu?",
+    ],
+)
+def test_reported_legal_queries_override_stale_tourism_hint_and_enable_legal_sources(query):
+    analysis = AnalysisResult(
+        original_query=query,
+        cleaned_query=query,
+        confidence_score=0.9,
+    )
+
+    routing = DomainRouterPlanner().process(analysis, domain_hint="tourism")
+    policy = PolicyEnforcementMiddleware().apply(routing.selected_domain)
+
+    assert routing.selected_domain in {"enterprise_law", "administrative_law"}
+    assert policy.domain_config.domain_id == "legal_ai"
+    assert policy.domain_config.knowledge_collection == "legal_docs_bge_m3"
+    assert "search_procedure" in policy.allowed_mcp_tools
 
 
 def test_mcp_result_becomes_structured_evidence():

@@ -1,22 +1,31 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from backend.catalog.service import CatalogService
+from backend.catalog.query_parser import catalog_query_from_text
+from backend.domain_documents import (
+    DomainDocumentError,
+    DomainDocumentService,
+    domain_document_collection,
+    retrieval_collections_for_domain,
+)
+from backend.domain_registry import registry_service
+from backend.chat_session import (
+    NEGATIVE_REPLIES,
+    find_pending_external_question,
+    normalize_session_id,
+    resolve_permission_reply,
+)
 from backend.mcp.adapter import (
     mcp_result_status,
     mcp_results_to_evidence
 )
-from backend.mcp.contract import call_mcp_tool as call_authorized_mcp_tool
+from backend.mcp.client import call_stdio_tool, make_server_parameters
 from backend.mcp.contract import MCPToolCallError
-from backend.mcp.runtime import scoped_tool_environment
 from backend.policy.middleware import PolicyEnforcementMiddleware
 
 from backend.prompt.assembler import PromptAssembler
-
-from backend.catalog.schemas import CatalogQuery
 
 from backend.evidence.normalizer import (
     procedure_to_evidence,
@@ -27,19 +36,33 @@ from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import FlagReranker
 from backend.rag.adapter import rag_results_to_evidence
+from backend.rag.diagnostics import (
+    attach_retrieval_failure_telemetry,
+    classify_retrieval_result,
+    retrieval_exception_details,
+)
+from backend.rag.relevance import procedure_relevance
 from backend.rag.data_sufficiency import check_enough_data
 from backend.rag.pipeline_policy import (
     build_catalog_fallback_after_retrieval_error,
+    check_evidence_sufficiency,
     choose_data_source,
 )
 from backend.evidence.builder import EvidenceBuilder
 from backend.evidence.schemas import EvidenceBundle
 from backend.answer.citations import structure_answer_with_explicit_evidence
+from backend.answer.evidence_gate import make_missing_prompt_evidence_result
+from backend.answer.reference_policy import (
+    classify_business_outcome,
+    reference_answer_failure_reason,
+)
 from backend.answer.citation_generation import generate_with_citation_retry
 from backend.answer.model_api_client import post_model_generation
 from backend.answer.diagnostics import (
     classify_upstream_exception,
+    citation_raw_debug_enabled,
     make_citation_attempt_logger,
+    safe_raw_answer_for_debug,
     verifier_reason_codes,
 )
 from backend.verifier.verifier import Verifier
@@ -77,27 +100,14 @@ prompt_assembler = PromptAssembler(
     )
 )
 MODEL_MAX_NEW_TOKENS = _bounded_int_setting("MODEL_MAX_NEW_TOKENS", 256, 1, 512)
+_raw_citation_debug_enabled = citation_raw_debug_enabled(os.environ)
+print(
+    "[CITATION DEBUG CONFIG]",
+    "enabled=", _raw_citation_debug_enabled,
+    flush=True,
+)
 verifier = Verifier()
 policy_middleware = PolicyEnforcementMiddleware()
-
-_LOG_TEXT_LIMIT = 2000
-_SECRET_VALUE_RE = re.compile(
-    r"(?i)(?:bearer\s+)[A-Za-z0-9._~+/=-]+|"
-    r"(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[^\s,;]+|"
-    r"\bsk-[A-Za-z0-9_-]{12,}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
-)
-_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
-_PHONE_RE = re.compile(r"(?<!\w)(?:\+?84|0)(?:[ .()-]*\d){8,10}(?!\w)")
-
-
-def _safe_diagnostic_text(value: str, limit: int = _LOG_TEXT_LIMIT) -> str:
-    """Bound model text in logs and redact common secrets and contact details."""
-    sanitized = _SECRET_VALUE_RE.sub("[REDACTED_SECRET]", value)
-    sanitized = _EMAIL_RE.sub("[REDACTED_EMAIL]", sanitized)
-    sanitized = _PHONE_RE.sub("[REDACTED_PHONE]", sanitized)
-    if len(sanitized) > limit:
-        return sanitized[:limit] + "...[TRUNCATED]"
-    return sanitized
 
 # =========================================================
 # APP
@@ -216,37 +226,7 @@ def get_pending_external_question(session_id: str) -> str | None:
     dữ liệu bên ngoài, lấy lại câu hỏi pháp lý ngay trước đó.
     """
 
-    permission_marker = (
-        "Bạn có muốn mình sử dụng "
-        "dữ liệu bên ngoài từ "
-        "Cổng Dịch vụ công Quốc gia"
-    )
-
-    with sqlite3.connect(CHAT_DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-
-        rows = conn.execute("""
-            SELECT role, content
-            FROM messages
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT 2
-        """, (session_id,)).fetchall()
-
-    if len(rows) < 2:
-        return None
-
-    latest = rows[0]
-    previous = rows[1]
-
-    if (
-        latest["role"] == "assistant"
-        and permission_marker in str(latest["content"] or "")
-        and previous["role"] == "user"
-    ):
-        return str(previous["content"] or "").strip() or None
-
-    return None
+    return find_pending_external_question(CHAT_DB_PATH, session_id)
 
 
 def get_chat_history(session_id: str, limit: int = 20) -> list[dict]:
@@ -292,9 +272,11 @@ def get_or_create_session_id(request: Request) -> tuple[str, bool]:
     if session_id:
         session_id = session_id.strip()
 
-    if session_id:
-        return session_id, False
+    normalized_session_id = normalize_session_id(session_id)
+    if normalized_session_id:
+        return normalized_session_id, False
 
+    # Never turn arbitrary cookie contents into a session namespace.
     return str(uuid.uuid4()), True
 
 
@@ -488,6 +470,12 @@ reranker = FlagReranker(
 
 print(
     "BGE Reranker loaded."
+)
+
+domain_document_service = DomainDocumentService(
+    qdrant=qdrant_client,
+    embedder=embedding_model,
+    registry=registry_service,
 )
 
 
@@ -702,102 +690,17 @@ def is_relevant_procedure(
     procedure_name: str,
     score: float
 ) -> bool:
-
-    question_normalized = (
-        normalize_vietnamese(
-            question
-        )
-    )
-
-    procedure_normalized = (
-        normalize_vietnamese(
-            procedure_name
-        )
-    )
-
-    if not procedure_normalized:
-        return False
-
-    # -----------------------------------------------------
-    # EXACT NAME
-    # -----------------------------------------------------
-
-    if procedure_normalized in question_normalized:
-
-        print(
-            "[RETRIEVAL MATCH]",
-            "match_type=exact",
-        )
-
-        return True
-
-    # -----------------------------------------------------
-    # KEYWORDS
-    # -----------------------------------------------------
-
-    question_keywords = (
-        extract_keywords(question)
-    )
-
-    procedure_keywords = (
-        extract_keywords(procedure_name)
-    )
-
-    if not question_keywords:
-        return False
-
-    if not procedure_keywords:
-        return False
-
-    matched = (
-        question_keywords
-        &
-        procedure_keywords
-    )
-
-    overlap = (
-        len(matched)
-        /
-        max(
-            len(procedure_keywords),
-            1
-        )
-    )
-
+    diagnostics = procedure_relevance(question, procedure_name)
     print(
         "[RETRIEVAL RELEVANCE]",
-        "score=",
-        round(score, 4),
-        "overlap=",
-        round(overlap, 2)
+        "score=", round(score, 4),
+        "match_type=", diagnostics["match_type"],
+        "matched_terms=", diagnostics["matched_term_count"],
+        "query_terms=", diagnostics["query_term_count"],
+        "query_coverage=", round(diagnostics["query_coverage"], 4),
+        "title_precision=", round(diagnostics["title_precision"], 4),
     )
-
-    # -----------------------------------------------------
-    # STRONG KEYWORD MATCH
-    # -----------------------------------------------------
-
-    if overlap >= 0.60:
-        return True
-
-    # -----------------------------------------------------
-    # SHORT PROCEDURE NAME
-    # -----------------------------------------------------
-
-    if (
-        len(procedure_keywords) <= 2
-        and len(matched) >= 1
-        and score >= 0.65
-    ):
-        return True
-
-    # -----------------------------------------------------
-    # VERY HIGH SCORE
-    # -----------------------------------------------------
-
-    if score >= 0.78:
-        return True
-
-    return False
+    return diagnostics["relevant"]
 
 
 # =========================================================
@@ -989,10 +892,12 @@ async def search_local_rag(
     catalog_evidences: list | None = None,
     allow_external: bool = False,
     request_id: str = "unknown",
+    domain_id: str = "legal_ai",
 ):
     if catalog_evidences is None:
         catalog_evidences = []
     stage_durations_ms = {}
+    retrieval_collection_status = "unknown"
     retrieval_started_at = time.perf_counter()
     print(
         "[PIPELINE STAGE]",
@@ -1015,6 +920,7 @@ async def search_local_rag(
         # BGE-M3 QUERY EMBEDDING
         # -------------------------------------------------
 
+        embedding_started_at = time.perf_counter()
         query_vector = (
             await asyncio.to_thread(
                 embedding_model.encode,
@@ -1022,39 +928,61 @@ async def search_local_rag(
                 normalize_embeddings=True
             )
         )
+        stage_durations_ms["embedding"] = round(
+            (time.perf_counter() - embedding_started_at) * 1000, 2
+        )
 
         # -------------------------------------------------
         # QDRANT TOP-K
         # -------------------------------------------------
 
-        response = (
-            await asyncio.to_thread(
-
-                qdrant_client.query_points,
-
-                collection_name=
-                    QDRANT_COLLECTION,
-
-                query=
-                    query_vector.tolist(),
-
-                limit=
-                    MAX_LOCAL_RESULTS,
-
-                with_payload=True
+        domain_config = registry_service.get_domain_config(domain_id)
+        retrieval_collections = retrieval_collections_for_domain(
+            domain_id,
+            qdrant_client.collection_exists,
+            registry_service,
+        )
+        configured_collection = domain_config.knowledge_collection
+        if configured_collection and configured_collection not in retrieval_collections:
+            retrieval_collection_status = (
+                "partial" if retrieval_collections else "base_collection_missing"
             )
+            print(
+                "[RETRIEVAL COLLECTION]",
+                "request_id=", request_id,
+                "domain_id=", domain_id,
+                "status=", retrieval_collection_status,
+            )
+        else:
+            retrieval_collection_status = (
+                "available" if retrieval_collections else "no_domain_documents"
+            )
+
+        qdrant_started_at = time.perf_counter()
+        results = []
+        for collection_name in retrieval_collections:
+            response = await asyncio.to_thread(
+                qdrant_client.query_points,
+                collection_name=collection_name,
+                query=query_vector.tolist(),
+                limit=MAX_LOCAL_RESULTS,
+                with_payload=True,
+            )
+            results.extend(response.points)
+        stage_durations_ms["qdrant"] = round(
+            (time.perf_counter() - qdrant_started_at) * 1000, 2
         )
 
-        results = response.points
-
         contexts = []
+        rejected_irrelevance_count = 0
 
         # -------------------------------------------------
         # LOCAL PROCEDURE EXACT LOOKUP
         # -------------------------------------------------
-        exact_local_items = await asyncio.to_thread(
-            find_exact_local_procedures,
-            retrieval_question
+        exact_local_items = (
+            await asyncio.to_thread(find_exact_local_procedures, retrieval_question)
+            if domain_config.knowledge_collection == QDRANT_COLLECTION
+            else []
         )
         stage_durations_ms["local_retrieval"] = round(
             (time.perf_counter() - retrieval_started_at) * 1000, 2
@@ -1087,6 +1015,12 @@ async def search_local_rag(
                     "legal_basis": str(payload.get("legal_basis", "")).strip(),
                     "results": str(payload.get("results", "")).strip(),
                     "source_url": str(payload.get("source_url", "")).strip(),
+                    "source_type": payload.get("source_type"),
+                    "domain_id": payload.get("domain_id"),
+                    "source_id": payload.get("source_id"),
+                    "evidence_id": payload.get("evidence_id"),
+                    "title": payload.get("title"),
+                    "location": payload.get("location"),
                 })
 
         # -------------------------------------------------
@@ -1109,6 +1043,7 @@ async def search_local_rag(
                     )
                 )
             ).strip()
+            source_type = str(payload.get("source_type", "") or "")
 
             text = str(
                 payload.get(
@@ -1121,9 +1056,20 @@ async def search_local_rag(
                 result.score
                 or 0
             )
+            candidate_id = str(getattr(result, "id", "unknown"))[:100]
+            safe_payload_fields = sorted(
+                key for key in payload
+                if key in {"thu_tuc", "procedure_name", "domain", "category", "source_type"}
+            )
 
             if not text:
-                print("[RETRIEVAL CANDIDATE]", "request_id=", request_id, "decision=reject_empty")
+                print(
+                    "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
+                    "candidate_id=", candidate_id,
+                    "payload_fields=", ",".join(safe_payload_fields),
+                    "score=", round(score, 4), "overlap=not_computed",
+                    "decision=reject_empty_text",
+                )
 
                 continue
 
@@ -1137,16 +1083,34 @@ async def search_local_rag(
                     if item.get("score", 0) >= 0.99
                 }
                 if procedure_name not in exact_names:
-                    print("[RETRIEVAL CANDIDATE]", "request_id=", request_id, "decision=reject_low_score")
+                    print(
+                        "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
+                        "candidate_id=", candidate_id,
+                        "procedure_name=", procedure_name[:160],
+                        "payload_fields=", ",".join(safe_payload_fields),
+                        "score=", round(score, 4), "overlap=not_computed",
+                        "decision=reject_low_score",
+                    )
                     continue
 
-            if not is_relevant_procedure(
+            if source_type != "domain_upload" and not is_relevant_procedure(
                 retrieval_question,
                 procedure_name,
                 score
             ):
-
-                print("[RETRIEVAL CANDIDATE]", "request_id=", request_id, "decision=reject_irrelevant")
+                rejected_irrelevance_count += 1
+                relevance = procedure_relevance(retrieval_question, procedure_name)
+                print(
+                    "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
+                    "candidate_id=", candidate_id,
+                    "procedure_name=", procedure_name[:160],
+                    "payload_fields=", ",".join(safe_payload_fields),
+                    "score=", round(score, 4),
+                    "query_coverage=", round(relevance["query_coverage"], 4),
+                    "title_precision=", round(relevance["title_precision"], 4),
+                    "matched_terms=", relevance["matched_term_count"],
+                    "decision=reject_irrelevant",
+                )
 
                 continue
 
@@ -1175,6 +1139,12 @@ async def search_local_rag(
                     "legal_basis": str(payload.get("legal_basis", "")).strip(),
                     "results": str(payload.get("results", "")).strip(),
                     "source_url": str(payload.get("source_url", "")).strip(),
+                    "source_type": source_type or None,
+                    "domain_id": payload.get("domain_id"),
+                    "source_id": payload.get("source_id"),
+                    "evidence_id": payload.get("evidence_id"),
+                    "title": payload.get("title"),
+                    "location": payload.get("location"),
                 }
             )
 
@@ -1433,11 +1403,16 @@ async def search_local_rag(
         retrieved_count = len(results)
         reranked_count = len(reranked_contexts)
         evidence_count = len(evidence_bundle.evidences)
+        retrieval_status = classify_retrieval_result(
+            retrieved_count,
+            len(contexts),
+            rejected_irrelevance_count,
+        )
 
         return {
             "contexts": formatted_contexts,
             "evidence_bundle": evidence_bundle,
-            "retrieval_status": "completed",
+            "retrieval_status": retrieval_status,
             "reranking_status": reranking_status,
             "evidence_builder_status": "completed",
             "enough_data": enough_data,
@@ -1447,9 +1422,10 @@ async def search_local_rag(
             "retrieved_count": retrieved_count,
             "reranked_count": reranked_count,
             "evidence_count": evidence_count,
+            "retrieval_collection_status": retrieval_collection_status,
             "stage_durations_ms": stage_durations_ms,
             "stage_status": {
-                "retrieval": "completed",
+                "retrieval": retrieval_status,
                 "reranking": reranking_status,
                 "evidence_builder": "completed",
                 "data_sufficiency": "completed",
@@ -1461,13 +1437,16 @@ async def search_local_rag(
             "local_retrieval",
             round((time.perf_counter() - retrieval_started_at) * 1000, 2),
         )
+        failure_details = retrieval_exception_details(e)
         print(
             "[PIPELINE STAGE]",
             "request_id=", request_id,
             "stage=retrieval_pipeline",
             "status=failed",
-            "reason_code=UNKNOWN_PIPELINE_FAILURE",
+            "component=", failure_details["component"],
+            "reason_code=", failure_details["reason_code"],
             "exception_type=", type(e).__name__,
+            "cause_exception_type=", failure_details["cause_exception_type"],
         )
 
         fallback = build_catalog_fallback_after_retrieval_error(
@@ -1480,16 +1459,14 @@ async def search_local_rag(
         fallback["retrieved_count"] = 0
         fallback["reranked_count"] = 0
         fallback["evidence_count"] = len(fallback["evidence_bundle"].evidences)
+        fallback["retrieval_collection_status"] = retrieval_collection_status
         fallback["stage_status"] = {
             "retrieval": "failed",
             "reranking": "not_started",
             "evidence_builder": "completed",
             "data_sufficiency": "completed",
         }
-        fallback["failure_stage"] = "retrieval_pipeline"
-        fallback["failure_reason_code"] = "UNKNOWN_PIPELINE_FAILURE"
-        fallback["exception_type"] = type(e).__name__
-        return fallback
+        return attach_retrieval_failure_telemetry(fallback, e)
 
     return {
         "contexts": [],
@@ -1593,52 +1570,49 @@ async def call_mcp_tool(
         tool_name
     )
 
-    server_params = (
-        StdioServerParameters(
-
-            command=
-                sys.executable,
-
-            args=[
-                MCP_SERVER_PATH
-            ],
-
-            env={
-                **scoped_tool_environment(allowed_tools, os.environ),
-                "PYTHONIOENCODING": "utf-8",
-            }
-        )
-    )
-
+    mcp_started_at = time.perf_counter()
+    mcp_stage_timings: dict[str, float] = {}
     try:
         timeout_seconds = float(os.getenv("MCP_CLIENT_TIMEOUT_SECONDS", "60"))
-
-        async def invoke_mcp_session():
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    print("MCP CONNECTED")
-                    return await call_authorized_mcp_tool(
-                        session,
-                        tool_name,
-                        arguments,
-                        allowed_tools=allowed_tools,
-                        timeout_seconds=timeout_seconds,
-                    )
-
-        result_text = await asyncio.wait_for(
-            invoke_mcp_session(), timeout=timeout_seconds
+        server_params = make_server_parameters(
+            script_path=MCP_SERVER_PATH,
+            cwd=BASE_DIR,
+            python_executable=sys.executable,
+            allowed_tools=allowed_tools,
+            request_id=request_id,
+            timeout_seconds=timeout_seconds,
+            base_environment=os.environ,
         )
-    except asyncio.TimeoutError as exc:
-        raise MCPToolCallError(
-            f"MCP startup or tool call exceeded {timeout_seconds:g}s.",
-            "MCP_TOOL_TIMEOUT",
-        ) from exc
+
+        def log_tool_stage(stage: str, elapsed_ms: float) -> None:
+            mcp_stage_timings[stage] = round(elapsed_ms, 2)
+            stage_status = (
+                "timeout" if stage.endswith("_timeout")
+                else "error" if stage.endswith("_error")
+                else "completed"
+            )
+            print(
+                "[MCP STAGE]", "request_id=", request_id,
+                "stage=", stage, "status=", stage_status,
+                "elapsed_ms=", round(elapsed_ms, 2),
+            )
+
+        result_text = await call_stdio_tool(
+            server_params,
+            tool_name,
+            arguments,
+            allowed_tools=allowed_tools,
+            timeout_seconds=timeout_seconds,
+            on_stage=log_tool_stage,
+        )
     except (MCPToolCallError, ValueError) as exc:
+        elapsed_ms = round((time.perf_counter() - mcp_started_at) * 1000, 2)
         print(
             "[MCP STAGE]", "request_id=", request_id,
             "status=failed", "tool=", tool_name,
+            "reason_code=", getattr(exc, "reason_code", "INVALID_CONFIGURATION"),
             "exception_type=", type(exc).__name__,
+            "elapsed_ms=", elapsed_ms,
         )
         raise
 
@@ -1659,17 +1633,30 @@ async def call_mcp_tool(
     else:
         result_status = "completed" if result_text else "no_match"
         mcp_raw_results = []
+    mapping_started_at = time.perf_counter()
+    mcp_evidences = mcp_results_to_evidence(mcp_raw_results)
+    mapping_elapsed_ms = round((time.perf_counter() - mapping_started_at) * 1000, 2)
+    elapsed_ms = round((time.perf_counter() - mcp_started_at) * 1000, 2)
+    mcp_stage_timings["result_mapping"] = mapping_elapsed_ms
+    mcp_stage_timings["total"] = elapsed_ms
     print(
         "[MCP RESULTS]",
-        "count=", len(mcp_raw_results),
+        "request_id=", request_id,
+        "status=", result_status,
+        "raw_count=", len(mcp_raw_results),
         "chars=", sum(map(len, mcp_raw_results)),
+        "mapped_evidence_count=", len(mcp_evidences),
+        "mapping_elapsed_ms=", mapping_elapsed_ms,
+        "elapsed_ms=", elapsed_ms,
     )
-    mcp_evidences = mcp_results_to_evidence(mcp_raw_results)
     contexts = [result_text] if result_status == "completed" and result_text else []
     return {
         "status": result_status,
         "contexts": contexts,
         "evidences": mcp_evidences,
+        "stage_durations_ms": mcp_stage_timings,
+        "raw_result_count": len(mcp_raw_results),
+        "mapped_evidence_count": len(mcp_evidences),
     }
 
 
@@ -1741,6 +1728,35 @@ def build_context(
 # CHAT API
 # =========================================================
 
+@app.post("/api/v1/domains/{domain_id}/documents")
+async def upload_domain_document(domain_id: str, file: UploadFile = File(...)):
+    try:
+        registry_service.get_domain_config(domain_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown domain") from exc
+
+    content = await file.read(2 * 1024 * 1024 + 1)
+    filename = file.filename or ""
+    await file.close()
+    try:
+        return await asyncio.to_thread(
+            domain_document_service.upload,
+            domain_id,
+            filename,
+            content,
+        )
+    except DomainDocumentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        print(
+            "[DOMAIN DOCUMENT UPLOAD]",
+            "domain_id=", domain_id,
+            "status=failed",
+            "exception_type=", type(exc).__name__,
+        )
+        raise HTTPException(status_code=503, detail="Domain document indexing failed") from exc
+
+
 @app.post(
     "/api/v1/chat/completions"
 )
@@ -1770,23 +1786,23 @@ async def chat_completions(
             ""
         )
     ).strip()
+    policy_domain = str(data.get("policy_domain", "") or "").strip().lower()
+    effective_domain = policy_domain or "legal_ai"
+    try:
+        selected_domain_config = registry_service.get_domain_config(effective_domain)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown domain") from exc
         # ============================================================
     # DIRECT CATALOG
     # ============================================================
-
-    catalog_query = CatalogQuery(
-        domain="legal",
-        intent="procedure_lookup",
-        procedure_name=question,
-    )
-
-    catalog_started_at = time.perf_counter()
-    catalog_result, catalog_lookup_status = catalog_service.lookup_optional(
-        catalog_query
-    )
-    catalog_lookup_duration_ms = round(
-        (time.perf_counter() - catalog_started_at) * 1000, 2
-    )
+    catalog_result = None
+    catalog_lookup_duration_ms = 0.0
+    catalog_lookup_status = "not_allowed"
+    if selected_domain_config.knowledge_collection == QDRANT_COLLECTION:
+        catalog_query = catalog_query_from_text(question)
+        catalog_started_at = time.perf_counter()
+        catalog_result, catalog_lookup_status = catalog_service.lookup_optional(catalog_query)
+        catalog_lookup_duration_ms = round((time.perf_counter() - catalog_started_at) * 1000, 2)
     if catalog_lookup_status == "unavailable":
         print(
             "[CATALOG LOOKUP]",
@@ -1794,7 +1810,7 @@ async def chat_completions(
             "status=unavailable",
             "reason=database_operational_error",
         )
-    elif catalog_result is None:
+    elif selected_domain_config.knowledge_collection == QDRANT_COLLECTION and catalog_result is None:
         catalog_lookup_status = "unknown"
         print(
             "[CATALOG LOOKUP]",
@@ -1802,7 +1818,7 @@ async def chat_completions(
             "status=unknown",
             "reason=result_missing",
         )
-    else:
+    elif catalog_result is not None:
         catalog_lookup_status = "matched" if catalog_result.matched else "no_match"
 
     catalog_evidences = []
@@ -1844,7 +1860,6 @@ async def chat_completions(
         raw_allow_external
     )
 
-    policy_domain = str(data.get("policy_domain", "") or "").strip().lower()
     requested_mcp_tools = data.get("mcp_allowed_tools", [])
     if not isinstance(requested_mcp_tools, list):
         requested_mcp_tools = []
@@ -1882,29 +1897,6 @@ async def chat_completions(
 
     normalized_reply = normalize_vietnamese(question)
 
-    affirmative_replies = {
-        "co",
-        "co nhe",
-        "co a",
-        "dong y",
-        "ok",
-        "oke",
-        "okay",
-        "yes",
-        "duoc",
-        "cho phep",
-        "tra cuu di",
-        "cu tra cuu",
-    }
-
-    negative_replies = {
-        "khong",
-        "khong can",
-        "thoi",
-        "khong tra cuu",
-        "no",
-    }
-
     pending_question = None
 
     if not allow_external:
@@ -1912,22 +1904,22 @@ async def chat_completions(
             session_id
         )
 
-        if (
-            pending_question
-            and normalized_reply in affirmative_replies
-        ):
+        permission_resolution = resolve_permission_reply(
+            question,
+            pending_question,
+            allow_external,
+            normalized_reply,
+        )
+        if permission_resolution.decision == "approved":
             print(
                 "PERMISSION REPLY: USER ĐỒNG Ý"
             )
             print("[SESSION]", "request_id=", request_id, "status=pending_question_restored")
 
-            question = pending_question
-            allow_external = True
+            question = permission_resolution.question
+            allow_external = permission_resolution.allow_external
 
-        elif (
-            pending_question
-            and normalized_reply in negative_replies
-        ):
+        elif permission_resolution.decision == "denied":
             print(
                 "PERMISSION REPLY: USER TỪ CHỐI"
             )
@@ -1962,16 +1954,28 @@ async def chat_completions(
             "reranking": "not_started",
             "evidence_builder": "not_started",
             "enough_data": "not_evaluated",
+            "answer_data_sufficiency": "not_evaluated",
             "required_fields": [],
             "missing_fields": [],
+            "answer_required_fields": [],
+            "answer_missing_fields": [],
             "external_fallback": "not_evaluated",
             "prompt_assembly": "not_started",
             "model_api": "not_started",
             "citation_verification": "not_started",
             "claim_grounding_status": "not_evaluated",
             "confidence_status": "not_evaluated",
+            "confidence_scorer_status": "not_configured",
+            "confidence_reason": None,
+            "grounding_scorer_status": "not_configured",
+            "grounding_reason": "NO_GROUNDING_SCORER_CONFIGURED",
+            "verification_outcome": "not_verified",
+            "claim_verification_results": [],
             "verification_status": "not_started",
+            "response_outcome": "pending",
+            "answer_withheld": True,
             "citation_attempts": 0,
+            "raw_answer_debug_enabled": _raw_citation_debug_enabled,
             "evidence_count": 0,
             "evidence_ids": [],
             "cited_evidence_ids": [],
@@ -2023,7 +2027,7 @@ async def chat_completions(
 
         if (
             pending_question
-            and normalized_reply in negative_replies
+            and normalized_reply in NEGATIVE_REPLIES
             and not allow_external
         ):
             refusal_message = (
@@ -2081,6 +2085,7 @@ async def chat_completions(
             catalog_evidences=catalog_evidences,
             allow_external=allow_external,
             request_id=request_id,
+            domain_id=effective_domain,
         )
 
         if isinstance(rag_result, dict):
@@ -2107,6 +2112,15 @@ async def chat_completions(
             pipeline_state["missing_fields"] = rag_result.get(
                 "missing_fields", []
             )
+            pipeline_state["answer_data_sufficiency"] = pipeline_state[
+                "enough_data"
+            ]
+            pipeline_state["answer_required_fields"] = list(
+                pipeline_state["required_fields"]
+            )
+            pipeline_state["answer_missing_fields"] = list(
+                pipeline_state["missing_fields"]
+            )
             pipeline_state["external_fallback"] = rag_result.get(
                 "external_fallback", "not_evaluated"
             )
@@ -2118,6 +2132,9 @@ async def chat_completions(
             )
             pipeline_state["evidence_count"] = rag_result.get(
                 "evidence_count", 0
+            )
+            pipeline_state["retrieval_collection_status"] = rag_result.get(
+                "retrieval_collection_status", "unknown"
             )
             pipeline_state["stage_durations_ms"].update(
                 rag_result.get("stage_durations_ms", {})
@@ -2132,6 +2149,8 @@ async def chat_completions(
                 "failure_stage",
                 "failure_reason_code",
                 "exception_type",
+                "cause_exception_type",
+                "failure_component",
             ):
                 if rag_result.get(key):
                     pipeline_state[key] = rag_result[key]
@@ -2210,6 +2229,8 @@ async def chat_completions(
                 )
                 pipeline_state["citation_verification"] = "not_required"
                 pipeline_state["external_fallback"] = "awaiting_permission"
+                pipeline_state["response_status"] = "waiting_permission"
+                pipeline_state["response_outcome"] = "needs_clarification"
 
                 yield (
                     "event: status\n"
@@ -2267,6 +2288,7 @@ async def chat_completions(
                     + json.dumps(
                         {
                             "status": "waiting_permission",
+                            "outcome": "needs_clarification",
                             "verifier": "not_required",
                             "verifier_scope": "not_applicable",
                             "pipeline": pipeline_state,
@@ -2314,6 +2336,30 @@ async def chat_completions(
                 pipeline_state["external_fallback"] = mcp_result.get(
                     "status", "completed"
                 )
+                pipeline_state["mcp_status"] = mcp_result.get("status", "unknown")
+                pipeline_state["mcp_raw_result_count"] = mcp_result.get(
+                    "raw_result_count", 0
+                )
+                pipeline_state["mcp_mapped_evidence_count"] = mcp_result.get(
+                    "mapped_evidence_count", len(mcp_evidences)
+                )
+                (
+                    final_enough_data,
+                    final_required_fields,
+                    final_missing_fields,
+                ) = check_evidence_sufficiency(question, mcp_evidences)
+                pipeline_state["answer_data_sufficiency"] = (
+                    "sufficient" if final_enough_data else "insufficient"
+                )
+                pipeline_state["answer_required_fields"] = final_required_fields
+                pipeline_state["answer_missing_fields"] = final_missing_fields
+                pipeline_state["stage_durations_ms"].update({
+                    f"mcp_{stage}": duration
+                    for stage, duration in mcp_result.get(
+                        "stage_durations_ms", {}
+                    ).items()
+                    if isinstance(duration, (int, float))
+                })
 
             except Exception as e:
                 mcp_failure_code = getattr(
@@ -2330,7 +2376,13 @@ async def chat_completions(
                 contexts = []
                 mcp_evidences = []
                 pipeline_state["external_fallback"] = (
-                    "timeout" if mcp_failure_code == "MCP_TOOL_TIMEOUT" else "error"
+                    "timeout"
+                    if mcp_failure_code in {
+                        "MCP_TOOL_TIMEOUT",
+                        "MCP_SERVER_STARTUP_TIMEOUT",
+                        "MCP_INITIALIZATION_TIMEOUT",
+                    }
+                    else "error"
                 )
                 pipeline_state["external_fallback_reason_code"] = mcp_failure_code
 
@@ -2343,6 +2395,56 @@ async def chat_completions(
             )
         pipeline_state["evidence_builder"] = "completed"
         pipeline_state["evidence_count"] = len(evidence_bundle.evidences)
+
+        # Do not spend an inference call when there is no traceable Evidence
+        # for the model. The Gateway will receive an explicit fail-closed state.
+        prompt_evidences = prompt_assembler.included_evidences(evidence_bundle)
+        missing_evidence_result = make_missing_prompt_evidence_result(
+            pipeline_state,
+            source_candidate_count=(
+                len(catalog_evidences) + len(contexts) + len(mcp_evidences)
+            ),
+            evidence_bundle_count=len(evidence_bundle.evidences),
+            prompt_evidences=prompt_evidences,
+        )
+        if missing_evidence_result is not None:
+            pipeline_state["response_outcome"] = "withheld"
+            pipeline_state["answer_withheld"] = True
+            save_message(
+                session_id,
+                "assistant",
+                missing_evidence_result["answer"],
+            )
+            print(
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=", pipeline_state["failure_stage"],
+                "status=failed",
+                "reason_code=EVIDENCE_IDS_MISSING",
+                "source_candidate_count=", len(catalog_evidences) + len(contexts) + len(mcp_evidences),
+                "evidence_bundle_count=", len(evidence_bundle.evidences),
+                "prompt_evidence_count=", len(prompt_evidences),
+            )
+            yield "event: chunk\n"
+            yield "data: " + json.dumps(
+                {
+                    "delta": missing_evidence_result["answer"],
+                    "session_id": session_id,
+                },
+                ensure_ascii=False,
+            ) + "\n\n"
+            yield "event: done\n"
+            yield "data: " + json.dumps(
+                {
+                    "status": "done",
+                    "outcome": "withheld",
+                    "verifier": missing_evidence_result["verifier"],
+                    "verifier_scope": missing_evidence_result["verifier_scope"],
+                    "pipeline": missing_evidence_result["pipeline"],
+                },
+                ensure_ascii=False,
+            ) + "\n\n"
+            return
 
 
         # =================================================
@@ -2401,7 +2503,6 @@ async def chat_completions(
 )
 
         system_prompt = assembled_prompt
-        prompt_evidences = prompt_assembler.included_evidences(evidence_bundle)
         verification_bundle = EvidenceBundle(
             query=evidence_bundle.query,
             evidences=prompt_evidences,
@@ -2416,6 +2517,19 @@ async def chat_completions(
         pipeline_state["evidence_count"] = len(prompt_evidences)
         pipeline_state["evidence_ids"] = [
             item.evidence_id for item in prompt_evidences
+        ]
+        # Keep source identity attached to the exact Evidence supplied to the
+        # model. Omit content and internal retrieval metadata from the API.
+        pipeline_state["evidence_sources"] = [
+            {
+                "evidence_id": item.evidence_id,
+                "source_type": item.source_type,
+                "source_id": item.source_id,
+                "title": item.title,
+                "source_url": item.source_url,
+                "location": item.location,
+            }
+            for item in prompt_evidences
         ]
         print(
             "[PIPELINE STAGE]",
@@ -2436,6 +2550,7 @@ async def chat_completions(
                         structured_answer,
                         selected_evidence_bundle,
                         minimum_confidence=verification_threshold,
+                        expected_domain_id=effective_domain,
                     )
                 finally:
                     pipeline_state["stage_durations_ms"]["citation_verification"] = round(
@@ -2568,9 +2683,15 @@ async def chat_completions(
                 generate=call_model,
                 verifier=timed_verifier,
                 max_attempts=2,
+                raw_answer_debug_enabled=_raw_citation_debug_enabled,
                 on_attempt=make_citation_attempt_logger(
                     request_id,
-                    _safe_diagnostic_text,
+                    safe_raw_answer_for_debug,
+                    include_raw_answer=_raw_citation_debug_enabled,
+                    allowed_evidence_ids=tuple(
+                        evidence.evidence_id
+                        for evidence in verification_bundle.evidences
+                    ),
                 ),
             )
             structured_answer = outcome.structured_answer
@@ -2611,16 +2732,64 @@ async def chat_completions(
             pipeline_state["claim_grounding_status"] = (
                 verification_result.claim_grounding_status
             )
+            pipeline_state["confidence_scorer_status"] = (
+                verification_result.confidence_scorer_status
+            )
+            pipeline_state["confidence_reason"] = verification_result.confidence_reason
+            pipeline_state["confidence_reason_code"] = (
+                "CONFIDENCE_EVALUATOR_UNAVAILABLE"
+                if verification_result.confidence_reason
+                == "NO_CALIBRATED_CONFIDENCE_SCORER_CONFIGURED"
+                else "CONFIDENCE_EVALUATOR_TIMEOUT"
+                if verification_result.confidence_reason == "CONFIDENCE_SCORER_TIMEOUT"
+                else verification_result.confidence_reason
+            )
+            pipeline_state["grounding_scorer_status"] = (
+                verification_result.grounding_scorer_status
+            )
+            pipeline_state["verification_outcome"] = verification_result.outcome
+            pipeline_state["grounding_reason"] = verification_result.grounding_reason
+            pipeline_state["grounding_reason_code"] = (
+                "GROUNDING_EVALUATOR_UNAVAILABLE"
+                if verification_result.grounding_reason
+                == "NO_GROUNDING_SCORER_CONFIGURED"
+                else "GROUNDING_EVALUATOR_TIMEOUT"
+                if verification_result.grounding_reason == "GROUNDING_SCORER_TIMEOUT"
+                else verification_result.grounding_reason
+            )
+            pipeline_state["claim_verification_results"] = (
+                verification_result.claim_results
+            )
+            confidence_was_evaluated = (
+                verification_result.confidence_status != "not_required"
+                and verification_result.confidence_scorer_status == "completed"
+            )
+            if confidence_was_evaluated and verification_result.semantic_support_evaluated:
+                pipeline_state["verifier_scope"] = (
+                    "citation_confidence_and_semantic_grounding"
+                )
+            elif confidence_was_evaluated:
+                pipeline_state["verifier_scope"] = "citation_integrity_and_confidence"
+            elif verification_result.semantic_support_evaluated:
+                pipeline_state["verifier_scope"] = (
+                    "citation_integrity_and_semantic_grounding"
+                )
+            else:
+                pipeline_state["verifier_scope"] = "citation_integrity_only"
             pipeline_state["verification_status"] = verification_status
             pipeline_state["stage_status"]["verifier"] = (
                 "passed" if verification_status == "passed"
                 else verification_status
-                if verification_status in ("failed", "not_verified")
+                if verification_status in (
+                    "failed", "not_verified", "evaluator_unavailable"
+                )
                 else "unknown"
             )
             answer = (
                 outcome.answer
                 if generation_succeeded and outcome.answer
+                else outcome.reference_answer
+                if generation_succeeded and outcome.reference_answer
                 else "Model API request failed; no answer was returned."
                 if not generation_succeeded
                 else "Chua the dua ra cau tra loi phap ly du dieu kien "
@@ -2628,6 +2797,9 @@ async def chat_completions(
             )
             retry_attempts = outcome.attempts
             pipeline_state["citation_attempts"] = retry_attempts
+            pipeline_state["citation_attempt_diagnostics"] = (
+                outcome.attempt_diagnostics
+            )
             pipeline_state["verifier_reason_counts"] = verifier_reason_codes(
                 verification_result
             )
@@ -2638,8 +2810,8 @@ async def chat_completions(
                 )
                 pipeline_state["failure_stage"] = "model_api"
                 pipeline_state["failure_reason_code"] = last_failure.get(
-                    "reason_code", "UNKNOWN_PIPELINE_FAILURE"
-                )
+                    "reason_code"
+                ) or outcome.failure_reason_code or "UNKNOWN_PIPELINE_FAILURE"
                 pipeline_state["exception_type"] = last_failure.get(
                     "exception_type", outcome.generation_error
                 )
@@ -2655,18 +2827,20 @@ async def chat_completions(
             elif verification_status == "failed":
                 pipeline_state["failure_stage"] = "verifier"
                 pipeline_state["failure_reason_code"] = (
-                    "CITATION_VERIFICATION_NOT_PASSED"
+                    outcome.failure_reason_code
                     if not verification_result.citation_integrity_passed
                     else "VERIFICATION_CONFIDENCE_NOT_PASSED"
                     if verification_result.confidence_status in ("failed", "invalid_score")
-                    else "VERIFIER_NOT_PASSED"
+                    else "CLAIM_GROUNDING_NOT_PASSED"
+                    if verification_result.claim_grounding_status == "failed"
+                    else outcome.failure_reason_code or "VERIFIER_NOT_PASSED"
                 )
             elif verification_status == "not_verified":
                 pipeline_state["failure_stage"] = "verifier"
                 pipeline_state["failure_reason_code"] = (
                     "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
                     if verification_result.confidence_status == "not_verified"
-                    else "CLAIM_GROUNDING_NOT_EVALUATED"
+                    else outcome.failure_reason_code or "CLAIM_GROUNDING_NOT_EVALUATED"
                 )
             elif verification_status == "error":
                 pipeline_state["failure_stage"] = "model_api_response"
@@ -2676,6 +2850,43 @@ async def chat_completions(
                 for claim in structured_answer.claims
                 for evidence_id in claim.evidence_ids
             })
+            answer_is_verified = (
+                generation_succeeded
+                and verification_status == "passed"
+                and verification_result.passed
+                and verification_result.citation_integrity_passed
+            )
+            reference_failure_reason = (
+                None
+                if answer_is_verified
+                else reference_answer_failure_reason(
+                    answer,
+                    pipeline_state,
+                    verification_status,
+                )
+            )
+            answer_is_unverified_reference = (
+                not answer_is_verified and reference_failure_reason is None
+            )
+            pipeline_state["reference_answer_reason_code"] = (
+                None if answer_is_unverified_reference else reference_failure_reason
+            )
+            pipeline_state["response_outcome"] = classify_business_outcome(
+                pipeline_state,
+                answer_is_verified=answer_is_verified,
+                answer_is_unverified_reference=answer_is_unverified_reference,
+            )
+            pipeline_state["answer_withheld"] = not (
+                answer_is_verified or answer_is_unverified_reference
+            )
+            if pipeline_state["answer_withheld"]:
+                answer = (
+                    "Evidence hiện có chưa đủ các thông tin thiết yếu để "
+                    "hiển thị câu trả lời an toàn; câu trả lời đã được giữ lại."
+                    if reference_failure_reason
+                    and reference_failure_reason.startswith("REFERENCE_ANSWER_ESSENTIAL_FACTS")
+                    else "Câu trả lời đã được giữ lại vì chưa đạt các kiểm tra Evidence."
+                )
             print(
                 "[CITATION INTEGRITY]",
                 "request_id=", request_id,
@@ -2685,7 +2896,8 @@ async def chat_completions(
                 "confidence_status=", pipeline_state["confidence_status"],
                 "checked_claims=", verification_result.checked_claims,
                 "linked_claims=", verification_result.linked_claims,
-                "semantic_support=not_evaluated",
+                "semantic_support_evaluated=",
+                verification_result.semantic_support_evaluated,
                 "attempts=", retry_attempts,
                 "reason_counts=", json.dumps(
                     pipeline_state["verifier_reason_counts"],
@@ -2694,7 +2906,7 @@ async def chat_completions(
             )
             print(
                 "[ANSWER RESULT]",
-                "status=", "generated" if outcome.answer else "withheld",
+                "status=", pipeline_state["response_outcome"],
                 "answer_chars=", len(answer),
                 "attempts=", retry_attempts,
                 "cited_evidence_ids=", pipeline_state["cited_evidence_ids"],
@@ -2731,6 +2943,13 @@ async def chat_completions(
 
         if verification_status == "error":
             answer = "Model API request failed; no answer was returned."
+        if pipeline_state.get("response_outcome") == "pending":
+            pipeline_state["response_outcome"] = classify_business_outcome(
+                pipeline_state,
+                answer_is_verified=False,
+                answer_is_unverified_reference=False,
+            )
+            pipeline_state["answer_withheld"] = True
 
         # =================================================
         # SAVE ASSISTANT MESSAGE
@@ -2775,8 +2994,11 @@ async def chat_completions(
             + json.dumps(
                 {
                     "status": "done",
+                    "outcome": pipeline_state["response_outcome"],
                     "verifier": verification_status,
-                    "verifier_scope": "citation_integrity_only",
+                    "verifier_scope": pipeline_state.get(
+                        "verifier_scope", "citation_integrity_only"
+                    ),
                     "pipeline": pipeline_state,
                 },
                 ensure_ascii=False,
