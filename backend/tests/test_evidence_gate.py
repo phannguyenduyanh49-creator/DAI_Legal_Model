@@ -72,3 +72,25 @@ def test_valid_prompt_evidence_does_not_trigger_empty_evidence_failure():
         prompt_evidences=(evidence,),
     ) is None
     assert pipeline == {"stage_status": {}}
+
+
+def test_missing_evidence_remains_fail_closed_for_general_and_tourism_domains():
+    expected = {
+        "general_assistant": "Hiện chưa có Evidence phù hợp để hỗ trợ câu trả lời tổng quát; hệ thống chưa tạo câu trả lời.",
+        "tourism": "Hiện chưa có Evidence du lịch phù hợp; hệ thống chưa tạo câu trả lời.",
+    }
+    for domain_id, answer in expected.items():
+        pipeline = {"stage_status": {}}
+        result = make_missing_prompt_evidence_result(
+            pipeline,
+            source_candidate_count=0,
+            evidence_bundle_count=0,
+            prompt_evidences=(),
+            domain_id=domain_id,
+        )
+        assert result["answer"] == answer
+        assert result["pipeline"]["model_api"] == "not_started"
+        assert result["pipeline"]["stage_status"]["model_api"] == "not_started"
+        assert result["pipeline"]["verification_status"] == "not_verified"
+        assert result["pipeline"]["verifier_scope"] == "not_evaluated"
+        assert result["pipeline"]["stage_status"]["verifier"] == "not_started"

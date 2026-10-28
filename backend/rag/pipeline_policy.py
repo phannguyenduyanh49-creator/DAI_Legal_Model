@@ -51,3 +51,18 @@ def choose_data_source(
     if allow_external:
         return "external"
     return "permission"
+
+
+def check_evidence_sufficiency(question: str, evidence_items: list) -> tuple[bool, list[str], list[str]]:
+    """Reassess requested facts against the final evidence set.
+
+    For Evidence objects without structured field metadata, their non-empty
+    content can satisfy only the generic ``full_text`` requirement. Explicitly
+    requested structured facts remain insufficient unless those fields exist.
+    """
+    candidates = []
+    for evidence in evidence_items:
+        content = getattr(evidence, "content", None)
+        if isinstance(content, str) and content.strip():
+            candidates.append({"full_text": content, "text": content})
+    return check_enough_data(question, candidates)

@@ -5,6 +5,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from backend import core_gateway
+from backend.orchestrator import RoutingPlanResult
 
 
 def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(caplog):
@@ -121,14 +122,10 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
     assert float(response.headers["x-gateway-latency-ms"]) >= 0
     assert captured["body"]["prompt"] == "Câu hỏi kiểm thử"
     assert captured["headers"]["X-Request-ID"] == data["request_id"]
-    assert captured["body"]["policy_domain"] == "legal_ai"
-    assert captured["body"]["mcp_allowed_tools"] == [
-        "search_dichvucong",
-        "search_legal_documents",
-        "search_procedure",
-    ]
-    assert "xác minh với văn bản" in captured["body"]["system_instruction"]
-    assert "Reply tone: formal." in captured["body"]["system_instruction"]
+    assert captured["body"]["policy_domain"] == "general_assistant"
+    assert captured["body"]["mcp_allowed_tools"] == []
+    assert "Reply tone: friendly." in captured["body"]["system_instruction"]
+    assert "xác minh với văn bản" not in captured["body"]["system_instruction"]
     assert "Language style:" in captured["body"]["system_instruction"]
     assert data["request_id"].startswith("trace_legal_")
     assert "CÃ¢u há»i kiá»ƒm thá»­" not in caplog.text
@@ -431,3 +428,30 @@ def test_gateway_rejects_unregistered_domain_hint_before_core_call():
         )
 
     assert response.status_code == 422
+
+
+def test_gateway_clarifies_ambiguous_domain_without_calling_core():
+    ambiguous = RoutingPlanResult(
+        selected_domain=None,
+        routing_confidence=0.0,
+        routing_reason="AMBIGUOUS_DOMAIN_SIGNALS",
+        clarification_required=True,
+        clarification_question="Do you mean legal or tourism information?",
+        execution_plan=[],
+        target_tools=[],
+    )
+    with (
+        patch.object(core_gateway.gateway_instance.orchestrator, "process", return_value=ambiguous),
+        patch.object(core_gateway.httpx, "AsyncClient", side_effect=AssertionError("Core must not be called")),
+        TestClient(core_gateway.app) as client,
+    ):
+        response = client.post(
+            "/api/v2/legal-query",
+            json={"query": "A question with mixed domain signals", "enable_hyde": False},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "needs_clarification"
+    assert response.json()["routing_and_planning"]["selected_domain"] is None
+    assert response.json()["pipeline_execution"]["model_api"] == "not_started"
+    assert response.json()["next_step"] == "CLARIFICATION_REQUIRED"

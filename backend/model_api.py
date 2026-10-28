@@ -31,8 +31,8 @@ configure_utf8_stdio()
 BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 LORA_MODEL = r"D:\Prj\DAI-Legal-Model\outputs\qwen-legal-lora-v4"
 
-HOST = "0.0.0.0"
-PORT = 8001
+HOST = os.getenv("MODEL_API_HOST", "127.0.0.1")
+PORT = int(os.getenv("MODEL_API_PORT", "8001"))
 
 
 def _configured_generation_limit() -> int:

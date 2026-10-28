@@ -665,6 +665,38 @@ class CoreAPIGateway:
                 )
                 pipeline_execution["orchestrator"] = "completed"
 
+                if routing_plan_result.clarification_required:
+                    pipeline_execution.update({
+                        "domain_policy": "not_started",
+                        "failure_stage": "domain_routing",
+                        "failure_reason_code": "AMBIGUOUS_DOMAIN_SIGNALS",
+                        "response_outcome": "needs_clarification",
+                        "answer_withheld": True,
+                        "model_api": "not_started",
+                    })
+                    pipeline_execution.setdefault("stage_status", {}).update({
+                        "domain_policy": "not_started",
+                        "retrieval": "not_started",
+                        "evidence_builder": "not_started",
+                        "prompt_assembly": "not_started",
+                        "model_api": "not_started",
+                    })
+                    total_processing_ms = round(
+                        (time.perf_counter() - start_time) * 1000, 2
+                    )
+                    return CoreAPIResponse(
+                        request_id=request_id,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        processing_time_ms=total_processing_ms,
+                        status="FAILED",
+                        outcome="needs_clarification",
+                        query_analysis=analysis_result,
+                        routing_and_planning=routing_plan_result,
+                        next_step="CLARIFICATION_REQUIRED",
+                        domain_policy={"status": "not_selected"},
+                        answer=routing_plan_result.clarification_question,
+                        pipeline_execution=pipeline_execution,
+                    )
 
                 # BƯỚC 3: Đọc Domain Registry và áp dụng Policy
                 stage_started_at = time.perf_counter()
@@ -1018,7 +1050,7 @@ gateway_instance = CoreAPIGateway()
 app = gateway_instance.app
 
 if __name__ == "__main__":
-    gateway_host = os.getenv("CORE_GATEWAY_HOST", "0.0.0.0")
+    gateway_host = os.getenv("CORE_GATEWAY_HOST", "127.0.0.1")
     gateway_port = int(os.getenv("CORE_GATEWAY_PORT", "8002"))
     logger.info(
         "Đang khởi động DAI Legal API Gateway tại http://127.0.0.1:%s ...",

@@ -1,0 +1,30 @@
+{
+  "model_id": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
+  "model_revision": "8adb042d524ecd5c26d3e3ba0e3fbcf7e2d0864c",
+  "device": "cpu",
+  "local_files_only": true,
+  "sample_count": 80,
+  "prediction_status_counts": {
+    "completed": 49,
+    "input_too_long": 31
+  },
+  "latency": {
+    "count": 49,
+    "mean_ms": 1938.963806122492,
+    "median_ms": 1038.6240999978327,
+    "p95_ms": 6432.029999999941
+  },
+  "metrics": {
+    "status": "metrics unavailable",
+    "reason": "No valid gold labels with review_status=expert_confirmed",
+    "reviewed_sample_count": 0,
+    "unlabeled_sample_count": 80,
+    "labeled_not_expert_confirmed_count": 0
+  },
+  "limitations": [
+    "NLI softmax values are not legal correctness probabilities or calibrated confidence.",
+    "Neutral maps to unsupported; the checkpoint cannot distinguish partial support.",
+    "Only the cited Evidence text in each row is evaluated.",
+    "Results require human-reviewed labels and do not imply production readiness."
+  ]
+}

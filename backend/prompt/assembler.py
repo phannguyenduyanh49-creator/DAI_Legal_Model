@@ -2,6 +2,7 @@ from typing import Optional
 from dataclasses import replace
 
 from backend.evidence.schemas import EvidenceBundle
+from backend.answer.citation_contract import CITATION_RULES, format_allowed_evidence_ids
 
 
 class PromptAssembler:
@@ -27,10 +28,7 @@ class PromptAssembler:
         )
 
         included_evidences = self.included_evidences(evidence_bundle)
-        system_part += (
-            " Cite every legal factual claim with the exact Evidence ID immediately after it. "
-            "Use only IDs shown in the Evidence section. Never invent a law, source, or ID."
-        )
+        system_part += " " + CITATION_RULES
         evidence_context = self._build_evidence_context(
             evidence_bundle
         )
@@ -69,16 +67,15 @@ class PromptAssembler:
             "Trình bày câu trả lời rõ ràng theo các mục phù hợp với câu hỏi.\n"
         )
 
-        allowed_ids = ", ".join(
+        allowed_ids = format_allowed_evidence_ids(
             item.evidence_id for item in included_evidences
-        ) or "none"
+        )
         return (
             prompt
             + ("\n=== DOMAIN-SPECIFIC INSTRUCTIONS ===\n" + domain_prompt + "\n" if domain_prompt else "")
             + "\n=== REQUIRED CITATION FORMAT ===\n"
-            + "Cite each legal factual sentence immediately with "
-            + "[Evidence ID: <exact allowed ID>].\n"
-            + "Use one claim per bullet. Do not cite headings. Do not invent laws, sources, or IDs.\n"
+            + CITATION_RULES
+            + "\n"
             + f"Allowed Evidence IDs: {allowed_ids}\n"
         )
 

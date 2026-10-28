@@ -26,17 +26,7 @@ class PolicyEnforcementMiddleware:
         self.registry = registry
 
     def registry_domain_for(self, routed_domain: str) -> str:
-        normalized = str(routed_domain or "").strip().lower()
-        if normalized in self.registry.list_all_domains():
-            return normalized
-        if "admin" in normalized:
-            return "administrative_law"
-        if normalized in {
-            "civil_law", "enterprise_law", "criminal_law", "labor_law",
-            "land_law", "general_legal",
-        }:
-            return "legal_ai"
-        return "legal_ai"
+        return self.registry.route_domain_id(routed_domain)
 
     @staticmethod
     def effective_tools(allowed_tools: Iterable[str]) -> tuple[str, ...]:

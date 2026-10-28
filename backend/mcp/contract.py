@@ -1,13 +1,14 @@
-"""Stable caller-side contract for invoking the persistent MCP client session.
+"""Stable caller-side tool contract for an initialized MCP session.
 
-The integration layer (for example the orchestrator/gateway) should own the MCP
-ClientSession lifecycle and pass that already-initialized session to
-``call_mcp_tool``. This avoids starting a new model/Qdrant-backed server per call.
+The caller owns session/process lifecycle. It may reuse a session only when its
+transport supports safe concurrency; the current stdio integration creates an
+isolated process and initialized session for each request.
 """
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Iterable, Protocol
+import time
+from typing import Any, Callable, Iterable, Protocol
 
 MCP_TOOL_CONTRACT: dict[str, dict[str, Any]] = {
     "search_legal_documents": {
@@ -65,6 +66,7 @@ async def call_mcp_tool(
     *,
     allowed_tools: Iterable[str],
     timeout_seconds: float = 60.0,
+    on_stage: Callable[[str, float], None] | None = None,
 ) -> str:
     """Call an initialized MCP session with explicit caller-side authorization.
 
@@ -93,17 +95,24 @@ async def call_mcp_tool(
         raise MCPToolCallError("timeout_seconds phải là số dương.")
 
     try:
+        tool_started_at = time.perf_counter()
         result = await asyncio.wait_for(
             session.call_tool(tool_name, arguments),
             timeout=float(timeout_seconds),
         )
+        if on_stage is not None:
+            on_stage("tool_call", (time.perf_counter() - tool_started_at) * 1000)
     except asyncio.TimeoutError as exc:
+        if on_stage is not None:
+            on_stage("tool_call_timeout", float(timeout_seconds) * 1000)
         error = MCPToolCallError(
             f"G\u1ecdi MCP tool '{tool_name}' qu\u00e1 th\u1eddi gian {timeout_seconds:g}s."
         )
         error.reason_code = "MCP_TOOL_TIMEOUT"
         raise error from exc
     except Exception as exc:
+        if on_stage is not None:
+            on_stage("tool_call_error", (time.perf_counter() - tool_started_at) * 1000)
         error = MCPToolCallError(
             f"G\u1ecdi MCP tool '{tool_name}' th\u1ea5t b\u1ea1i: {type(exc).__name__}: {exc}"
         )

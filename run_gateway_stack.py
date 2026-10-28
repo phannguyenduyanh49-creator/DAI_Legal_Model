@@ -15,11 +15,19 @@ SERVICES = [
 ]
 
 
-def main() -> int:
-    env = os.environ.copy()
+def build_child_environment(parent_environment: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy the caller's environment so explicit debug gates reach each service."""
+    env = dict(os.environ if parent_environment is None else parent_environment)
     env.setdefault("LEGACY_CORE_API_URL", "http://127.0.0.1:8000/api/v1/chat/completions")
-    env.setdefault("CORE_GATEWAY_HOST", "0.0.0.0")
+    env.setdefault("CORE_API_HOST", "127.0.0.1")
+    env.setdefault("MODEL_API_HOST", "127.0.0.1")
+    env.setdefault("CORE_GATEWAY_HOST", "127.0.0.1")
     env.setdefault("CORE_GATEWAY_PORT", "8002")
+    return env
+
+
+def main() -> int:
+    env = build_child_environment()
 
     processes: list[tuple[str, subprocess.Popen]] = []
     try:

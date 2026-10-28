@@ -72,6 +72,19 @@ def test_domain_upload_does_not_map_missing_domain_to_legal_ai():
         middleware.apply("unregistered")
 
 
+def test_domain_upload_rejects_disabled_domain_before_embedding_or_storage():
+    registry = DomainRegistryService()
+    tourism = registry.get_domain_config("tourism")
+    registry._registry["tourism"] = tourism.model_copy(update={"enabled": False})
+    qdrant = FakeQdrant()
+    with pytest.raises(DomainDocumentError, match="disabled"):
+        DomainDocumentService(qdrant, FakeEmbedder(), registry).upload(
+            "tourism", "routes.txt", b"Route XY-77 departs at 07:00."
+        )
+    assert qdrant.collections == set()
+    assert qdrant.upserts == []
+
+
 def test_incomplete_embedding_output_fails_without_creating_or_upserting_collection():
     class IncompleteEmbedder(FakeEmbedder):
         def encode(self, texts, **_kwargs):

@@ -5,6 +5,7 @@ import {
   ArrowUp,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   FileText,
   Info,
   LoaderCircle,
@@ -17,8 +18,13 @@ import {
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
-import { askLegalQuery, getGatewayHealth } from "./api";
-import { pipelineTelemetryRows, safeFailureTelemetry } from "./telemetry";
+import { askLegalQuery, getDomains, getDomainReadiness, getGatewayHealth, uploadDomainDocument } from "./api";
+import { answerOutcomeNotice, safeSourceUrl } from "./answerPresentation";
+import {
+  pipelineTelemetryRows,
+  safeCitationAttemptDiagnostics,
+  safeFailureTelemetry,
+} from "./telemetry";
 import "./App.css";
 
 const HISTORY_STORAGE_KEY = "dai-legal-chat-history-v1";
@@ -50,6 +56,21 @@ const VERIFIER_LABELS = {
   not_required: { label: "Không yêu cầu kiểm tra", tone: "neutral" },
   not_reported: { label: "API không gửi trạng thái kiểm tra", tone: "neutral" },
 };
+
+function readinessDescription(readiness) {
+  if (!readiness) return "Chưa có trạng thái readiness; chưa xác minh runtime.";
+  if (!readiness.enabled) return "Domain đã bị tắt trong Registry.";
+  if (readiness.e2e_verified === "verified") return "Đã xác minh E2E.";
+  if (!readiness.configured) return "Cấu hình domain chưa đầy đủ.";
+  return readiness.reason || "Cấu hình đã đăng ký; dữ liệu, retrieval và model chưa được xác minh.";
+}
+
+function readinessErrorLabel(domainReadinessError, readiness) {
+  if (domainReadinessError || !readiness) return "chưa xác minh";
+  if (!readiness.enabled) return "đã tắt";
+  if (readiness.e2e_verified !== "verified") return "chưa xác minh";
+  return "E2E đã xác minh";
+}
 
 function makeLocalId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -101,10 +122,18 @@ function PipelineDetails({ message }) {
   const citedIds = Array.isArray(pipeline.cited_evidence_ids)
     ? pipeline.cited_evidence_ids
     : [];
+  const evidenceSources = Array.isArray(pipeline.evidence_sources)
+    ? pipeline.evidence_sources.filter((source) => source && typeof source === "object")
+    : [];
+  const citationAttempts = safeCitationAttemptDiagnostics(
+    pipeline.citation_attempt_diagnostics,
+  );
   const rows = [
     ["Truy xuất", pipeline.retrieval],
+    ["Collection truy xuất", pipeline.retrieval_collection_status],
     ["Xếp hạng lại", pipeline.reranking],
     ["Evidence Builder", pipeline.evidence_builder],
+    ["Answer evidence sufficiency", pipeline.answer_data_sufficiency],
     ["Độ đầy đủ dữ liệu nội bộ", pipeline.enough_data],
     ["Nguồn ngoài", pipeline.external_fallback],
     ["Model API", pipeline.model_api],
@@ -112,6 +141,7 @@ function PipelineDetails({ message }) {
     ["Kiểm tra citation", pipeline.citation_verification || message.verifier],
     ["Số lần tạo", pipeline.citation_attempts],
     ["Trạng thái Gateway", message.responseStatus],
+    ["Thời gian Gateway", message.processingTimeMs == null ? undefined : `${message.processingTimeMs} ms`],
     ["Thời gian Model API", pipeline.model_processing_time_ms == null ? undefined : `${pipeline.model_processing_time_ms} ms`],
     ["Thời gian gọi Model API", pipeline.model_api_elapsed_ms == null ? undefined : `${pipeline.model_api_elapsed_ms} ms`],
     ["Domain", message.routing?.selected_domain],
@@ -155,12 +185,50 @@ function PipelineDetails({ message }) {
             </div>
           </div>
         )}
+        {evidenceSources.length > 0 && (
+          <div className="evidence-group">
+            <span className="evidence-label">Nguồn Evidence</span>
+            <div className="evidence-list">
+              {evidenceSources.map((source, index) => {
+                const sourceId = typeof source.source_id === "string" ? source.source_id : "";
+                const title = typeof source.title === "string" ? source.title.trim() : "";
+                const evidenceId = typeof source.evidence_id === "string" ? source.evidence_id : "";
+                const location = typeof source.location === "string" ? source.location : "";
+                const safeUrl = safeSourceUrl(source.source_url);
+                return (
+                  <div className="evidence-source" key={`${evidenceId || "source"}-${index}`}>
+                    <strong>{title || sourceId || evidenceId || "Nguồn không có tên"}</strong>
+                    {sourceId && <code>{sourceId}</code>}
+                    {location && <span>{location}</span>}
+                    {safeUrl && <a href={safeUrl} target="_blank" rel="noreferrer">Mở nguồn</a>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {citedIds.length > 0 && (
           <div className="evidence-group">
             <span className="evidence-label">Evidence ID parser nhận được</span>
             <div className="evidence-list">
               {citedIds.map((id) => (
                 <code key={id}>{id}</code>
+              ))}
+            </div>
+          </div>
+        )}
+        {citationAttempts.length > 0 && (
+          <div className="evidence-group">
+            <span className="evidence-label">Chẩn đoán citation theo lần thử</span>
+            <div className="evidence-list">
+              {citationAttempts.map((attempt) => (
+                <code key={attempt.attempt}>
+                  Lần {attempt.attempt}: {attempt.claim_count ?? "?"} claims, {attempt.claims_with_citation ?? "?"} có citation, {attempt.cited_evidence_count ?? "?"}/{attempt.allowed_evidence_count ?? "?"} Evidence ID, {attempt.unknown_evidence_count ?? "?"} ID lạ
+                  {attempt.parser_errors.length ? ` · parser: ${attempt.parser_errors.join(", ")}` : " · parser: không lỗi cú pháp"}
+                  {attempt.verifier_reasons.length ? ` · verifier: ${attempt.verifier_reasons.join(", ")}` : ""}
+                  {attempt.claim_grounding_status ? ` · grounding: ${attempt.claim_grounding_status}` : ""}
+                  {attempt.confidence_status ? ` · confidence: ${attempt.confidence_status}` : ""}
+                </code>
               ))}
             </div>
           </div>
@@ -189,7 +257,7 @@ function PipelineDetails({ message }) {
           </div>
         )}
         <p className="pipeline-note">
-          API hiện chỉ gửi mã Evidence, không gửi nội dung hoặc liên kết nguồn để hiển thị tại đây.
+          Chỉ metadata nguồn do API cung cấp mới được hiển thị; liên kết nguồn có thể không có sẵn.
           Trạng thái citation không xác nhận câu trả lời đúng về mặt ngữ nghĩa.
         </p>
       </div>
@@ -199,6 +267,7 @@ function PipelineDetails({ message }) {
 
 function AssistantMessage({ message, onFeedback }) {
   const verifier = VERIFIER_LABELS[message.verifier || "not_reported"] || VERIFIER_LABELS.not_reported;
+  const outcomeNotice = answerOutcomeNotice(message.responseStatus, message.verifier);
   const hasAnswer = Boolean(message.content?.trim());
   const displayedAnswer = message.content?.trim() === UNVERIFIED_FALLBACK
     ? POLITE_UNVERIFIED_FALLBACK
@@ -213,6 +282,11 @@ function AssistantMessage({ message, onFeedback }) {
           {message.created_at && <time>{formatTime(message.created_at)}</time>}
           {message.local && <span className="live-tag">Vừa xong</span>}
         </div>
+        {(message.domainPolicy?.domain_id || message.routing?.selected_domain) && (
+          <div className="message-domain" aria-label="Domain được sử dụng">
+            Domain được sử dụng: <strong>{message.domainPolicy?.domain_id || message.routing.selected_domain}</strong>
+          </div>
+        )}
         <div className={`assistant-card${message.error ? " assistant-card--error" : ""}`}>
           {message.loading ? (
             <div className="thinking-state" role="status">
@@ -248,10 +322,10 @@ function AssistantMessage({ message, onFeedback }) {
             </div>
           ) : (
             <>
-              {(message.responseStatus === "FAILED" || (message.verifier && message.verifier !== "passed")) && (
-                <div className={`verification-banner verification-banner--${message.responseStatus === "FAILED" ? "warning" : verifier.tone}`} role="status">
-                  {message.responseStatus === "FAILED" || verifier.tone === "warning" ? <AlertCircle size={16} /> : <Info size={16} />}
-                  <span>{message.responseStatus === "FAILED" ? "Gateway báo request FAILED; câu trả lời có thể là fallback an toàn." : verifier.label}</span>
+              {outcomeNotice && (
+                <div className={`verification-banner verification-banner--${outcomeNotice.tone}`} role="status">
+                  <AlertCircle size={16} />
+                  <span>{outcomeNotice.text}</span>
                 </div>
               )}
               <div className="answer-content">
@@ -262,7 +336,6 @@ function AssistantMessage({ message, onFeedback }) {
                   <CheckCircle2 size={14} /> Đã kiểm tra liên kết Evidence ID; chưa đánh giá hỗ trợ ngữ nghĩa.
                 </div>
               )}
-              {message.requestId && <div className="verification-caption">Request {message.requestId}{Number.isFinite(message.processingTimeMs) ? ` · Gateway ${message.processingTimeMs} ms` : ""}</div>}
               <PipelineDetails message={message} />
               <div className="message-feedback" aria-label="Đánh giá câu trả lời">
                 <span>Câu trả lời này hữu ích?</span>
@@ -313,6 +386,14 @@ function App() {
   const [healthLoading, setHealthLoading] = useState(true);
   const [connectionError, setConnectionError] = useState("");
   const [allowExternal, setAllowExternal] = useState(false);
+  const [domains, setDomains] = useState([]);
+  const [domainReadiness, setDomainReadiness] = useState({});
+  const [domainReadinessError, setDomainReadinessError] = useState(false);
+  const [domainHint, setDomainHint] = useState("");
+  const [domainToolsOpen, setDomainToolsOpen] = useState(false);
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [uploading, setUploading] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
@@ -330,6 +411,17 @@ function App() {
   }, []);
 
   useEffect(() => { checkGateway(); }, [checkGateway]);
+
+  useEffect(() => {
+    getDomains().then(setDomains).catch(() => setDomains([]));
+    getDomainReadiness().then((result) => {
+      setDomainReadiness(Object.fromEntries(result.domains.map((domain) => [domain.domain_id, domain])));
+      setDomainReadinessError(false);
+    }).catch(() => {
+      setDomainReadiness({});
+      setDomainReadinessError(true);
+    });
+  }, []);
 
   useEffect(() => {
     try {
@@ -387,7 +479,7 @@ function App() {
     ]);
 
     try {
-      const result = await askLegalQuery(prompt, { allowExternal });
+      const result = await askLegalQuery(prompt, { allowExternal, domainHint });
 
       updateMessage(assistantId, {
         content: result.answer,
@@ -396,8 +488,9 @@ function App() {
         verifierScope: result.pipeline_execution?.verifier_scope || "not_reported",
         pipeline: result.pipeline_execution || {},
         routing: result.routing_and_planning || {},
+        domainPolicy: result.domain_policy || {},
         executionPlan: result.routing_and_planning?.execution_plan,
-        responseStatus: result.status,
+        responseStatus: result.outcome || result.status,
         requestId: result.request_id,
         processingTimeMs: result.processing_time_ms,
         local: true,
@@ -419,6 +512,21 @@ function App() {
   const handleSubmit = (event) => {
     event.preventDefault();
     sendQuestion(question);
+  };
+
+  const handleDocumentUpload = async () => {
+    if (!domainHint || !uploadFile || uploading) return;
+    setUploading(true);
+    setUploadStatus("");
+    try {
+      const result = await uploadDomainDocument(domainHint, uploadFile);
+      setUploadStatus(`Đã lập chỉ mục ${result.title} · ${result.chunk_count} đoạn · ${result.domain_id}`);
+      setUploadFile(null);
+    } catch (error) {
+      setUploadStatus(error.message || "Không thể lập chỉ mục tài liệu.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const startNewConversation = () => {
@@ -565,6 +673,69 @@ function App() {
             )}
 
             <div className="composer-wrap">
+              <section className="domain-tools-section" aria-label="Công cụ tài liệu và domain">
+                <button
+                  className="domain-tools-toggle"
+                  type="button"
+                  aria-expanded={domainToolsOpen}
+                  aria-controls="domain-tools-panel"
+                  onClick={() => setDomainToolsOpen((open) => !open)}
+                >
+                  <span>Công cụ tài liệu và domain</span>
+                  {domainToolsOpen
+                    ? <ChevronUp size={16} aria-hidden="true" />
+                    : <ChevronDown size={16} aria-hidden="true" />}
+                </button>
+                <div
+                  id="domain-tools-panel"
+                  className={`domain-tools-panel${domainToolsOpen ? " domain-tools-panel--open" : ""}`}
+                  aria-hidden={!domainToolsOpen}
+                  inert={!domainToolsOpen}
+                >
+                  <div className="domain-tools-panel-inner">
+                    <div className="domain-tools">
+                      <label>
+                        <span>Domain</span>
+                        <select value={domainHint} onChange={(event) => setDomainHint(event.target.value)}>
+                          <option value="">Tự động</option>
+                          {domains.map((domain) => {
+                            const readiness = domainReadiness[domain];
+                            const label = readiness?.enabled === false
+                              ? `${domain} · đã tắt`
+                              : readinessErrorLabel(domainReadinessError, readiness);
+                            return <option key={domain} value={domain}>{label}</option>;
+                          })}
+                        </select>
+                      </label>
+                      <p className="domain-readiness" role="status">
+                        {domainHint
+                          ? domainReadinessError
+                            ? "Không tải được trạng thái sẵn sàng; domain chưa được xác minh."
+                            : readinessDescription(domainReadiness[domainHint])
+                          : "Domain được chọn tự động theo nội dung câu hỏi."}
+                      </p>
+                      <label className="domain-upload">
+                        <span>Tài liệu domain (.txt / .md)</span>
+                        <input
+                          type="file"
+                          accept=".txt,.md,text/plain,text/markdown"
+                          disabled={!domainHint || uploading}
+                          onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="domain-upload-button"
+                        disabled={!domainHint || !uploadFile || uploading}
+                        onClick={handleDocumentUpload}
+                      >
+                        {uploading ? "Đang lập chỉ mục…" : "Tải tài liệu vào domain"}
+                      </button>
+                      {uploadStatus && <span className="domain-upload-status" role="status">{uploadStatus}</span>}
+                    </div>
+                  </div>
+                </div>
+              </section>
               <form className="composer" onSubmit={handleSubmit}>
                 <textarea
                   ref={inputRef}

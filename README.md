@@ -1,11 +1,9 @@
 # DAI-Legal-Model
 
-<<<<<<< HEAD
 > **AI Legal Assistant for Vietnamese administrative procedures**  
 > Default stack: Qwen2.5-7B-Instruct + LoRA V4 + BGE-M3 RAG + Qdrant + Reranker + MCP/DVC + FastAPI + React/Vite
-=======
-Vietnamese legal-assistance research prototype combining a React/Vite frontend, FastAPI services, retrieval-augmented generation (RAG), a Qwen2.5-7B-Instruct model with a LoRA adapter, and evidence/citation verification.
->>>>>>> origin/main
+>
+> Vietnamese legal-assistance research prototype combining a React/Vite frontend, FastAPI services, retrieval-augmented generation (RAG), a Qwen2.5-7B-Instruct model with a LoRA adapter, and evidence/citation verification.
 
 > **Scope:** The project focuses on Vietnamese legal and administrative-procedure questions. It is an academic prototype, not a substitute for professional legal advice.
 
@@ -44,17 +42,6 @@ Diagnostics / Response <-------- Model API :8001
 ```
 
 The frontend sends `POST /api/v2/legal-query` to the Gateway. On localhost, the default Gateway URL is `http://127.0.0.1:8002`. A successful HTTP response may still carry `status: "FAILED"`; clients should inspect the response body instead of relying only on the HTTP status.
-
-## Repository layout
-
-```text
-<<<<<<< HEAD
-outputs/qwen-legal-lora-v3/
-```
-
-Model checkpoints are intentionally excluded from Git because of their size.
-
----
 
 ## 📚 Datasets
 
@@ -325,9 +312,9 @@ The frontend communicates with the Core API through the `/api/v1/chat/completion
 
 ## 🌍 Internet Deployment
 
-The application has been exposed to the Internet using **Cloudflare Tunnel** while keeping the model running on the local RTX 4070 machine.
+This repository documents an optional **Cloudflare Tunnel** deployment while keeping the model on a local machine. The current deployment and network access controls were not verified in this audit.
 
-Current routing:
+Documented routing (current availability not verified):
 
 ```text
 legal.donghai.uk
@@ -345,9 +332,9 @@ localhost:8000
 Core API
 ```
 
-The Cloudflare agent is installed as a Windows Service.
+The README has previously described the Cloudflare agent as a Windows Service; its current installation state was not checked.
 
-Verified deployment flow:
+Documented routing (not live-tested in this audit):
 
 ```text
 Other Device
@@ -372,21 +359,17 @@ Cloudflare Tunnel
      Qwen2.5-7B + LoRA V3
 ```
 
-The system has been tested from another device through the public domain.
+The repository documents this deployment path, but its current availability and access controls were not verified in this checkout.
 
-> The local PC must remain powered on and connected to the Internet for the public demo to remain available.
+> If this tunnel configuration is used, the local PC must remain powered on and connected to the Internet for the service to remain available.
 
 ---
 
 ## 📂 Project Structure
 
 ```text
-DAI-Legal-Model/
-│
-=======
 .
 ├── FE/                         # React/Vite frontend and Node tests
->>>>>>> origin/main
 ├── backend/
 │   ├── answer/                  # Citation formatting, model client, diagnostics
 │   ├── catalog/                 # Catalog lookup and service logic
@@ -406,6 +389,7 @@ DAI-Legal-Model/
 
 - Windows PowerShell or another supported Python/Node environment.
 - Python dependencies listed in `requirements.txt`.
+- Pytest test-runner dependency listed in `requirements-dev.txt` for backend test runs.
 - Node.js and npm for the frontend.
 - Model weights/LoRA adapter and any required retrieval services/data must be available locally or configured for your environment.
 - If using Qdrant, make sure its service and collection are configured before running queries.
@@ -423,6 +407,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+# Install this additional file when running the backend tests.
+pip install -r requirements-dev.txt
 ```
 
 If PowerShell blocks activation, you can call the environment's Python directly, for example `.\.venv\Scripts\python.exe -m pytest`.
@@ -431,7 +417,7 @@ If PowerShell blocks activation, you can call the environment's Python directly,
 
 ```powershell
 cd FE
-npm install
+npm.cmd install
 ```
 
 ### 3. Configure local paths and services
@@ -467,21 +453,15 @@ Keep this terminal open while testing. Press `Ctrl+C` to stop the services start
 In a separate terminal, start the frontend:
 
 ```powershell
-<<<<<<< HEAD
-python prepare_legal_dataset.py
+cd FE
+npm.cmd run dev
 ```
 
-Inspect the prepared dataset:
+Open the local URL printed by Vite (typically `http://localhost:5173`).
 
-```powershell
-python check_dataset.py
-```
+## Running the Full System
 
----
-
-## ▶️ Running the Full System
-
-The default launcher starts the Legacy/Core API, the Model API, and the Core Gateway. It runs `backend.model_api`, which loads `Qwen/Qwen2.5-7B-Instruct` with 4-bit NF4/BF16 settings and the `outputs/qwen-legal-lora-v4` adapter.
+The default launcher starts the Legacy/Core API, Model API, and Core Gateway. The Model API loads `Qwen/Qwen2.5-7B-Instruct` with 4-bit NF4/BF16 settings and the configured LoRA V4 adapter at startup.
 
 Start PostgreSQL and Qdrant, then start the API stack from the repository root:
 
@@ -490,28 +470,17 @@ docker compose -f backend/docker-compose.yml up -d postgres qdrant
 .\.venv\Scripts\python.exe run_gateway_stack.py
 ```
 
-The APIs listen on ports 8000 (Legacy/Core), 8001 (Model API), and 8002 (Core Gateway). The frontend uses the Gateway. In another terminal:
+The APIs use ports 8000 (Legacy/Core), 8001 (Model API), and 8002 (Core Gateway). In another terminal, start the frontend with the command above. The launcher currently monitors child process exit codes; it does not wait for health readiness.
 
-```powershell
-cd FE
-npm.cmd run dev
-```
+The Python APIs bind to `127.0.0.1` by default. The launcher passes `CORE_API_HOST`, `MODEL_API_HOST`, and `CORE_GATEWAY_HOST` through to the services; set an explicit host only when the deployment boundary and access controls are configured. `MODEL_API_URL` can override the Core API's model service URL. Loopback binding does not add user authentication, and the Gateway should not be exposed publicly without an access-control layer.
 
-`python model_api.py` is a separate legacy entrypoint. It reads `outputs/active/registry.json` and falls back to the V3 adapter; it is not launched by `run_gateway_stack.py`. The two entrypoints use different adapter-selection behavior, so both are retained.
-
-MCP is launched by the Legacy/Core API when permission and policy allow the requested tool.
+`python model_api.py` is a separate legacy entrypoint and is not launched by `run_gateway_stack.py`. MCP is started by the Core API when permission and policy allow the requested tool.
 
 ### Generation limits and verification status
 
-`MODEL_MAX_NEW_TOKENS` controls the maximum response length (default `256`, bounded to `1..512`). `PROMPT_MAX_EVIDENCE_CHARS` controls the prompt evidence budget (default `6000`, bounded to `1000..12000`). These settings can be overridden in the process environment and reset by removing the override.
+`MODEL_MAX_NEW_TOKENS` controls the maximum response length (default `256`, bounded to `1..512`). `PROMPT_MAX_EVIDENCE_CHARS` controls the prompt evidence budget (default `6000`, bounded to `1000..12000`). These settings can be overridden in the process environment.
 
-The current verifier checks citation IDs and evidence references; it does not calculate semantic support or a confidence score. Domain policies define `verification_threshold`, so answers remain withheld with `confidence_status=not_verified` until a real confidence scorer is integrated. A passing citation check alone is not reported as passing the configured confidence threshold.
-=======
-cd FE
-npm run dev
-```
-
-Open the local URL printed by Vite (typically `http://localhost:5173`).
+The verifier checks citation linkage but has no production semantic-grounding or calibrated confidence scorer configured. A citation pass is not a semantic verification pass. Existing policy may return a citation-linked `answered_unverified` answer when its conditions pass; that response must not be described as verified.
 
 ## API endpoints
 
@@ -519,21 +488,21 @@ Open the local URL printed by Vite (typically `http://localhost:5173`).
 |---|---|---|---|
 | Core Gateway (:8002) | GET | `/health` | Gateway health check |
 | Core Gateway (:8002) | POST | `/api/v2/legal-query` | Submit a legal query |
+| Core Gateway (:8002) | GET | `/api/v2/domains/` | List registered domains |
 | Legacy/Core API (:8000) | API routes | See `backend/main.py` | Retrieval and answer pipeline |
 | Model API (:8001) | POST | `/generate` | Generate a model response |
 
-The Gateway request body currently accepts a query and an `allow_external` permission flag, for example:
+The Gateway request body accepts `query`, optional `domain_hint`, and `allow_external`, for example:
 
 ```json
 {
-  "query": "Thủ tục đăng ký tạm trú cần giấy tờ gì?",
+  "query": "What documents are required for enterprise registration?",
+  "domain_hint": "enterprise_law",
   "allow_external": false
 }
 ```
 
-For the exact schemas and response fields, use `gateway_openapi.json` or the running service's OpenAPI docs.
->>>>>>> origin/main
-
+For exact schemas and response fields, use `gateway_openapi.json` or the running service's OpenAPI docs.
 ## Tests and production build
 
 Run backend tests from the repository root:
@@ -546,14 +515,14 @@ Run frontend tests and build:
 
 ```powershell
 cd FE
-npm test
-npm run build
+npm.cmd test
+npm.cmd run build
 ```
 
 The frontend tests use Node's built-in test runner. If Vite cannot clean an existing `dist` directory on Windows due to a file lock or permissions, stop the frontend dev server and try a separate output directory:
 
 ```powershell
-npm run build -- --outDir build-check
+npm.cmd run build -- --outDir build-check
 ```
 
 Generated directories such as `FE/dist/` and `FE/build-check/` should not be committed.
@@ -570,3 +539,7 @@ Datasets, vector indexes, model weights, and LoRA adapters may be large or subje
 - Users should verify important procedures, fees, deadlines, and legal requirements against current official sources.
 
 This repository is intended for academic and research use only.
+
+## Domain-scoped document knowledge bases
+
+The Gateway lists registered domains at GET /api/v2/domains/. Select a domain in the chat controls, then upload UTF-8 .txt or .md files (up to 2 MiB) with POST /api/v2/domains/{domain_id}/documents before asking a question in that domain. Uploaded chunks are stored in `domain_documents_{domain_id}` and retrieval is restricted to that domain's configured collection. Tourism is a sample non-legal domain for isolated development fixtures; it does not fall back to legal catalog or legal vectors. Uploaded text has no fabricated public URL, so the UI identifies it by filename, document ID, and chunk location.

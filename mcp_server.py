@@ -6,14 +6,12 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import os
+import time
 from pathlib import Path
 
 from typing import Any
 
-from datasets import load_from_disk
-
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
 from mcp.server import MCPServer
 from backend.mcp.runtime import guarded_tool
 from backend.mcp.dvc_search import (
@@ -64,38 +62,67 @@ ALLOWED_HOST = "dichvucong.gov.vn"
 # INITIALIZE
 # ============================================================
 
-print(
-    "Loading embedding model...",
-    file=sys.stderr
-)
+embedding_model = None
 
-embedding_model = SentenceTransformer(
-    EMBEDDING_MODEL
-)
 
-print(
-    "Embedding model OK",
-    file=sys.stderr
-)
+def get_embedding_model():
+    """Load the local retrieval encoder only for tools that need embeddings."""
+    global embedding_model
+    if embedding_model is None:
+        started_at = time.perf_counter()
+        from sentence_transformers import SentenceTransformer
+
+        embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+        print(
+            "[MCP STAGE]",
+            "request_id=", os.getenv("DAI_REQUEST_ID", "unknown"),
+            "stage=embedding_model_load",
+            "status=completed",
+            "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+            file=sys.stderr,
+            flush=True,
+        )
+    return embedding_model
 
 qdrant = QdrantClient(
     url=QDRANT_URL
 )
 
-# Load DVC procedure index once. This is NOT the external source of truth.
-# It is only a local lookup index for finding the official DVC formality ID.
+# This is NOT the external source of truth. It is loaded only if the official
+# top-search endpoint cannot resolve a title to an ID.
 dvc_dataset = None
-try:
-    dvc_dataset = load_from_disk(DVC_DATASET_PATH)
-    print(
-        f"DVC LOCAL INDEX OK: {len(dvc_dataset)} procedures",
-        file=sys.stderr
-    )
-except Exception as e:
-    print(
-        f"DVC LOCAL INDEX WARNING: {repr(e)}",
-        file=sys.stderr
-    )
+
+
+def get_dvc_dataset():
+    global dvc_dataset
+    if dvc_dataset is not None:
+        return dvc_dataset
+    started_at = time.perf_counter()
+    try:
+        from datasets import load_from_disk
+
+        dvc_dataset = load_from_disk(DVC_DATASET_PATH)
+        print(
+            "[MCP STAGE]",
+            "request_id=", os.getenv("DAI_REQUEST_ID", "unknown"),
+            "stage=dvc_local_index_load", "status=completed",
+            "count=", len(dvc_dataset),
+            "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            "[MCP STAGE]",
+            "request_id=", os.getenv("DAI_REQUEST_ID", "unknown"),
+            "stage=dvc_local_index_load", "status=failed",
+            "exception_type=", type(exc).__name__,
+            "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    return dvc_dataset
 
 mcp = MCPServer(
     "DAI Legal MCP"
@@ -320,6 +347,10 @@ def post_json(
     timeout: int = 30
 ) -> Any:
 
+    started_at = time.perf_counter()
+    request_id = os.getenv("DAI_REQUEST_ID", "unknown")
+    step = "detail" if url == DVC_DETAIL_API else "search"
+
     parsed = urllib.parse.urlparse(
         url
     )
@@ -373,9 +404,16 @@ def post_json(
             )
 
             print(
-                f"DVC HTTP STATUS: "
-                f"{response.status}",
-                file=sys.stderr
+                "[MCP HTTP]",
+                "request_id=", request_id,
+                "source=dichvucong",
+                "step=", step,
+                "status_code=", response.status,
+                "attempt=1", "retry_count=0",
+                "response_chars=", len(text),
+                "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+                file=sys.stderr,
+                flush=True,
             )
 
             print(
@@ -420,8 +458,14 @@ def post_json(
         )
 
         print(
-            f"DVC HTTP ERROR: {e.code}",
-            file=sys.stderr
+            "[MCP HTTP]",
+            "request_id=", request_id,
+            "source=dichvucong", "step=", step,
+            "status_code=", e.code,
+            "attempt=1", "retry_count=0",
+            "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+            file=sys.stderr,
+            flush=True,
         )
 
 
@@ -430,8 +474,15 @@ def post_json(
     except Exception as e:
 
         print(
-            f"DVC REQUEST ERROR: {repr(e)}",
-            file=sys.stderr
+            "[MCP HTTP]",
+            "request_id=", request_id,
+            "source=dichvucong", "step=", step,
+            "status_code=unavailable",
+            "exception_type=", type(e).__name__,
+            "attempt=1", "retry_count=0",
+            "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+            file=sys.stderr,
+            flush=True,
         )
 
         raise
@@ -639,7 +690,7 @@ def search_legal_documents(
 
     try:
 
-        vector = embedding_model.encode(
+        vector = get_embedding_model().encode(
             query
         ).tolist()
 
@@ -715,18 +766,26 @@ def build_dvc_search_queries(keyword: str) -> list[str]:
 
 
 def search_dvc_rows(query: str) -> list:
+    started_at = time.perf_counter()
     rows = fetch_dvc_rows(
         query,
         lambda url, payload: post_json(url, payload),
         DVC_SEARCH_API,
     )
-    print(f"DVC TOP-SEARCH ROW COUNT: {len(rows)}", file=sys.stderr)
+    print(
+        "[MCP DVC]",
+        "request_id=", os.getenv("DAI_REQUEST_ID", "unknown"),
+        "stage=search_parse", "status=completed",
+        "raw_count=", len(rows),
+        "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
+        file=sys.stderr,
+    )
     return rows
 
 
 def search_local_dvc_index(query: str, limit: int = 5) -> list:
     """Resolve relevant official IDs from the local index, then fetch DVC detail."""
-    dataset = dvc_dataset if dvc_dataset is not None else []
+    dataset = get_dvc_dataset()
     ranked = rank_local_index(dataset, query, limit=limit)
     print(f"DVC LOCAL INDEX MATCH COUNT: {len(ranked)}", file=sys.stderr)
     return ranked
@@ -763,6 +822,7 @@ def search_procedure(
 @mcp.tool()
 @guarded_tool("search_dichvucong")
 def search_dichvucong(keyword: str) -> str:
+    tool_started_at = time.perf_counter()
     original_question = str(keyword or "").strip()
     if not is_procedure_question(original_question):
         return "DVC_NO_RELEVANT_RESULT: query is not an administrative procedure request."
@@ -777,6 +837,7 @@ def search_dichvucong(keyword: str) -> str:
     rows = []
     for query in queries:
         rows.extend(search_dvc_rows(query))
+    raw_search_count = len(rows)
     unique_rows = {}
     for row in rows:
         procedure_id = get_procedure_id(row)
@@ -786,7 +847,16 @@ def search_dichvucong(keyword: str) -> str:
     selected = find_best_procedure(list(unique_rows.values()), dvc_keyword)
     selected_source = "official_search"
     if selected is None:
+        fallback_started_at = time.perf_counter()
         fallback_candidates = search_local_dvc_index(dvc_keyword, limit=5)
+        print(
+            "[MCP DVC]",
+            "request_id=", os.getenv("DAI_REQUEST_ID", "unknown"),
+            "stage=local_id_resolution", "status=completed" if fallback_candidates else "no_match",
+            "candidate_count=", len(fallback_candidates),
+            "elapsed_ms=", round((time.perf_counter() - fallback_started_at) * 1000, 2),
+            file=sys.stderr,
+        )
         if not fallback_candidates:
             return "DVC_NO_RELEVANT_RESULT: no sufficiently relevant official procedure matched."
         selected = fallback_candidates[0]["row"]
@@ -798,6 +868,7 @@ def search_dichvucong(keyword: str) -> str:
         raise DVCUpstreamError("Selected DVC procedure is missing its official ID or name")
     procedure_code = str(selected.get("code") or selected.get("codeNotation") or "")
 
+    detail_started_at = time.perf_counter()
     detail_response = get_dvc_detail_by_id(str(procedure_id))
     validate_dvc_detail_response(detail_response, str(procedure_id))
 
@@ -806,7 +877,17 @@ def search_dichvucong(keyword: str) -> str:
         raise DVCUpstreamError("DVC detail response contains no procedure detail")
 
     print(f"DVC MATCH SOURCE: {selected_source}", file=sys.stderr)
-    print("DVC RESULT: relevant official detail returned", file=sys.stderr)
+    print(
+        "[MCP DVC]",
+        "request_id=", os.getenv("DAI_REQUEST_ID", "unknown"),
+        "stage=detail_mapping", "status=completed",
+        "detail_elapsed_ms=", round((time.perf_counter() - detail_started_at) * 1000, 2),
+        "raw_search_count=", raw_search_count,
+        "unique_search_count=", len(unique_rows),
+        "tool_elapsed_ms=", round((time.perf_counter() - tool_started_at) * 1000, 2),
+        file=sys.stderr,
+        flush=True,
+    )
     return f"""
 DVC_OFFICIAL_PROCEDURE
 DVC_PROCEDURE_NAME: {procedure_name}

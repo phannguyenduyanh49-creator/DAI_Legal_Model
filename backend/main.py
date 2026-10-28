@@ -307,8 +307,9 @@ MCP_SERVER_PATH = os.path.join(
     "mcp_server.py"
 )
 
-MODEL_API_URL = (
-    "http://localhost:8001/generate"
+MODEL_API_URL = os.getenv(
+    "MODEL_API_URL",
+    f"http://127.0.0.1:{os.getenv('MODEL_API_PORT', '8001')}/generate",
 )
 
 QDRANT_URL = (
@@ -981,7 +982,7 @@ async def search_local_rag(
         # -------------------------------------------------
         exact_local_items = (
             await asyncio.to_thread(find_exact_local_procedures, retrieval_question)
-            if domain_config.knowledge_collection == QDRANT_COLLECTION
+            if domain_config.catalog_enabled
             else []
         )
         stage_durations_ms["local_retrieval"] = round(
@@ -1731,9 +1732,11 @@ def build_context(
 @app.post("/api/v1/domains/{domain_id}/documents")
 async def upload_domain_document(domain_id: str, file: UploadFile = File(...)):
     try:
-        registry_service.get_domain_config(domain_id)
+        selected_domain_config = registry_service.get_domain_config(domain_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown domain") from exc
+    if not selected_domain_config.enabled:
+        raise HTTPException(status_code=409, detail="Domain is disabled")
 
     content = await file.read(2 * 1024 * 1024 + 1)
     filename = file.filename or ""
@@ -1792,13 +1795,15 @@ async def chat_completions(
         selected_domain_config = registry_service.get_domain_config(effective_domain)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown domain") from exc
+    if not selected_domain_config.enabled:
+        raise HTTPException(status_code=409, detail="Domain is disabled")
         # ============================================================
     # DIRECT CATALOG
     # ============================================================
     catalog_result = None
     catalog_lookup_duration_ms = 0.0
     catalog_lookup_status = "not_allowed"
-    if selected_domain_config.knowledge_collection == QDRANT_COLLECTION:
+    if selected_domain_config.catalog_enabled:
         catalog_query = catalog_query_from_text(question)
         catalog_started_at = time.perf_counter()
         catalog_result, catalog_lookup_status = catalog_service.lookup_optional(catalog_query)
@@ -1810,7 +1815,7 @@ async def chat_completions(
             "status=unavailable",
             "reason=database_operational_error",
         )
-    elif selected_domain_config.knowledge_collection == QDRANT_COLLECTION and catalog_result is None:
+    elif selected_domain_config.catalog_enabled and catalog_result is None:
         catalog_lookup_status = "unknown"
         print(
             "[CATALOG LOOKUP]",
@@ -2406,6 +2411,7 @@ async def chat_completions(
             ),
             evidence_bundle_count=len(evidence_bundle.evidences),
             prompt_evidences=prompt_evidences,
+            domain_id=effective_domain,
         )
         if missing_evidence_result is not None:
             pipeline_state["response_outcome"] = "withheld"
@@ -3121,6 +3127,6 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000
+        host=os.getenv("CORE_API_HOST", "127.0.0.1"),
+        port=int(os.getenv("CORE_API_PORT", "8000")),
     )

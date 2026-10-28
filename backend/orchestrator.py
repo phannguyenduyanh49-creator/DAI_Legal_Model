@@ -1,74 +1,142 @@
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from backend.query_analysis import AnalysisResult
+from backend.domain_registry import DomainRegistryService, registry_service
 
 logger = logging.getLogger("DAI_Legal_Orchestrator")
 
 class RoutingPlanResult(BaseModel):
-    selected_domain: str = Field(..., description="Lĩnh vực pháp lý được phân loại")
-    routing_confidence: float = Field(..., description="Độ tự tin của thuật toán định tuyến domain")
+    selected_domain: Optional[str] = Field(..., description="Canonical domain/route alias, or null when clarification is required")
+    routing_confidence: float = Field(..., description="Heuristic route score; not a calibrated probability")
+    routing_reason: str = ""
+    clarification_required: bool = False
+    clarification_question: Optional[str] = None
     execution_plan: List[Dict[str, Any]] = Field(..., description="Kế hoạch hành động chi tiết dạng đa bước (Planner Steps)")
     target_tools: List[str] = Field(..., description="Danh sách các Agent Tools / Micro-services cần kích hoạt")
 
 class DomainRouterPlanner:
-    """
-    Bộ điều phối trung tâm (Orchestrator Engine):
-    1. Domain Router: Phân loại câu hỏi vào đúng phân vùng pháp luật chuyên biệt.
-    2. Agent Planner: Xây dựng sơ đồ thực thi pipeline tìm kiếm và sinh câu trả lời.
-    """
-    def __init__(self):
-        logger.info("[Module 2 - Orchestrator] Đang khởi tạo Domain Router và Agent Planner...")
+    """Classify with the active domain registry's routing rules."""
 
-        # Bảng ánh xạ từ khóa phân vùng lĩnh vực luật chi tiết
-        self.domain_keyword_registry: Dict[str, List[str]] = {
-            "civil_law": ["hợp đồng", "thừa kế", "ly hôn", "bồi thường", "tài sản", "dân sự", "vay mượn", "di chúc", "nợ nần"],
-            "enterprise_law": ["doanh nghiệp", "công ty", "cổ phần", "góp vốn", "đăng ký kinh doanh", "phá sản", "giám đốc", "hội đồng quản trị", "mã số thuế"],
-            "criminal_law": ["tội phạm", "hình sự", "hành vi vi phạm", "truy tố", "xét xử", "tù giam", "cấu thành tội phạm", "tang vật", "cố ý gây thương tích"],
-            "administrative_law": ["thủ tục hành chính", "khiếu nại", "tố cáo", "giấy phép", "cơ quan nhà nước", "xử phạt vi phạm hành chính", "UBND", "quyết định hành chính"],
-            "labor_law": ["hợp đồng lao động", "sa thải", "lương thưởng", "bảo hiểm xã hội", "thôi việc", "đình công", "tiền lương", "giờ làm việc"],
-            "land_law": ["đất đai", "sổ đỏ", "sổ hồng", "quyền sử dụng đất", "thu hồi đất", "giải phóng mặt bằng", "tranh chấp ranh giới", "sang nhượng nhà đất"],
-            "general_legal": [],
-            "general_assistant": []
-        }
+    MINIMUM_ROUTE_SCORE = 2
+    AMBIGUITY_MARGIN = 1
 
-    def route_domain(self, query_analysis: AnalysisResult, domain_hint: Optional[str] = None) -> tuple[str, float]:
-        """Phân loại domain dựa trên gợi ý thủ công hoặc phân tích từ khóa tần suất cao."""
-        # 1. Kiểm tra domain hint từ client (nếu có và hợp lệ)
+    def __init__(self, registry: DomainRegistryService = registry_service):
+        self.registry = registry
+        if self.registry.fallback_domain_id not in self.registry.list_enabled_domains():
+            raise ValueError("The configured fallback domain must be enabled.")
+
+    @staticmethod
+    def _score_rule(rule, corpus: str) -> int:
+        strong_matches = sum(term in corpus for term in rule.strong_keywords)
+        regular_matches = sum(term in corpus for term in rule.keywords)
+        score = strong_matches * 2 + regular_matches
+        # A clearly expressed legal intent wins over generic business language.
+        if not strong_matches:
+            score -= 2 * sum(term in corpus for term in rule.exclusions)
+        return score
+
+    def _route_decision(
+        self,
+        query_analysis: AnalysisResult,
+        domain_hint: Optional[str],
+    ) -> tuple[Optional[str], float, str, bool]:
+        corpus = " ".join([
+            query_analysis.cleaned_query,
+            *query_analysis.expanded_terms,
+            *query_analysis.extracted_citations,
+        ]).casefold()
+        scored = []
+        strong_categories = set()
+        for owner_domain, rule in self.registry.iter_routing_rules():
+            score = self._score_rule(rule, corpus)
+            if any(term in corpus for term in rule.strong_keywords):
+                strong_categories.add(rule.category)
+            if score >= self.MINIMUM_ROUTE_SCORE:
+                scored.append({
+                    "score": score,
+                    "priority": rule.priority,
+                    "category": rule.category,
+                    "route_id": rule.route_id,
+                    "owner": owner_domain,
+                })
+        scored.sort(key=lambda item: (item["score"], item["priority"]), reverse=True)
+
+        category_scores = {}
+        for candidate in scored:
+            category_scores[candidate["category"]] = max(
+                category_scores.get(candidate["category"], 0), candidate["score"]
+            )
+
+        tied_categories = [
+            category for category, score in category_scores.items()
+            if category != max(category_scores, key=category_scores.get)
+            and max(category_scores.values()) - score <= self.AMBIGUITY_MARGIN
+        ] if category_scores else []
+        competing_strong_categories = (
+            len(strong_categories) > 1
+            and {"legal", "tourism"}.issubset(strong_categories)
+        )
+
         if domain_hint:
-            normalized_hint = domain_hint.strip().lower()
-            if normalized_hint in self.domain_keyword_registry:
-                logger.info(f"[Domain Router] Ưu tiên sử dụng Domain Hint từ Client: '{normalized_hint}' (Confidence: 1.0)")
-                return normalized_hint, 1.0
+            hinted_domain = self.registry.route_domain_id(domain_hint)
+            hinted_rules = [
+                rule for owner, rule in self.registry.iter_routing_rules()
+                if owner == hinted_domain and rule.route_id == domain_hint.strip().lower()
+            ]
+            hinted_categories = {rule.category for rule in hinted_rules}
+            if not hinted_categories:
+                hinted_categories = {
+                    rule.category for owner, rule in self.registry.iter_routing_rules()
+                    if owner == hinted_domain
+                }
+            conflicting = [
+                item for item in scored
+                if item["owner"] != hinted_domain
+                and (not hinted_categories or item["category"] not in hinted_categories)
+            ]
+            if conflicting:
+                best_conflict = conflicting[0]
+                if tied_categories or competing_strong_categories:
+                    return None, 0.0, "AMBIGUOUS_DOMAIN_SIGNALS", True
+                logger.info(
+                    "[Domain Router] Content overrides stale domain hint '%s' with route '%s'.",
+                    domain_hint,
+                    best_conflict["route_id"],
+                )
+                return (
+                    best_conflict["route_id"],
+                    float(best_conflict["score"]),
+                    "CONTENT_OVERRIDES_STALE_HINT",
+                    False,
+                )
+            return domain_hint.strip().lower(), 1.0, "DOMAIN_HINT", False
 
-        # 2. Tổng hợp văn bản phân tích để quét từ khóa
-        target_corpus = (
-            query_analysis.cleaned_query + " " +
-            " ".join(query_analysis.expanded_terms) + " " +
-            " ".join(query_analysis.extracted_citations)
-        ).lower()
+        if not scored:
+            return (
+                self.registry.fallback_domain_id,
+                0.0,
+                "NO_DOMAIN_RULE_MATCH",
+                False,
+            )
+        if tied_categories or competing_strong_categories:
+            return None, 0.0, "AMBIGUOUS_DOMAIN_SIGNALS", True
+        return (
+            scored[0]["route_id"],
+            float(scored[0]["score"]),
+            "REGISTRY_KEYWORD_RULE",
+            False,
+        )
 
-        domain_scores: Dict[str, int] = {}
-        for domain, keywords in self.domain_keyword_registry.items():
-            if not keywords:
-                continue
-            score = sum(1 for kw in keywords if kw in target_corpus)
-            if score > 0:
-                domain_scores[domain] = score
-
-        if not domain_scores:
-            logger.warning("[Domain Router] Không khớp từ khóa chuyên sâu nào. Chuyển hướng về phân vùng 'general_legal'.")
-            return "general_legal", 0.50
-
-        # Chọn domain có điểm số cao nhất
-        best_domain = max(domain_scores, key=domain_scores.get)
-        raw_score = domain_scores[best_domain]
-
-        # Tính toán điểm confidence tương đối (giới hạn từ 0.60 đến 0.98)
-        confidence = round(min(0.98, 0.55 + (raw_score * 0.12)), 2)
-
-        logger.info(f"[Domain Router] Đã phân loại thành công vào Domain: '{best_domain}' với điểm tin cậy {confidence}")
-        return best_domain, confidence
+    def route_domain(
+        self,
+        query_analysis: AnalysisResult,
+        domain_hint: Optional[str] = None,
+    ) -> tuple[Optional[str], float]:
+        domain, score, _reason, _clarification = self._route_decision(
+            query_analysis, domain_hint
+        )
+        return domain, score
 
     def create_execution_plan(self, domain: str, query_analysis: AnalysisResult) -> tuple[List[Dict[str, Any]], List[str]]:
         """Lập kế hoạch hành động chi tiết (Agent Planner) theo chuẩn ReAct/Plan-and-Solve đa bước."""
@@ -124,12 +192,25 @@ class DomainRouterPlanner:
 
     def process(self, query_analysis: AnalysisResult, domain_hint: Optional[str] = None) -> RoutingPlanResult:
         """Thực thi toàn bộ quy trình định tuyến domain và tạo lập kế hoạch tác vụ."""
-        selected_domain, conf = self.route_domain(query_analysis, domain_hint)
-        execution_plan, target_tools = self.create_execution_plan(selected_domain, query_analysis)
+        selected_domain, score, reason, clarification_required = self._route_decision(
+            query_analysis, domain_hint
+        )
+        if clarification_required or selected_domain is None:
+            execution_plan, target_tools = [], []
+        else:
+            execution_plan, target_tools = self.create_execution_plan(
+                selected_domain, query_analysis
+            )
 
         return RoutingPlanResult(
             selected_domain=selected_domain,
-            routing_confidence=conf,
+            routing_confidence=score,
+            routing_reason=reason,
+            clarification_required=clarification_required,
+            clarification_question=(
+                "Câu hỏi có dấu hiệu thuộc nhiều lĩnh vực. Bạn muốn tra cứu theo pháp luật hay du lịch?"
+                if clarification_required else None
+            ),
             execution_plan=execution_plan,
             target_tools=target_tools
         )
