@@ -1,0 +1,130 @@
+{
+  "dataset_name": "Vietnamese legal retrieval synthetic smoke benchmark",
+  "version": 1,
+  "evidence_note": "Closed-world engineering fixture, not an authoritative legal corpus. DOC_001-DOC_004 are adapted from the supplied prototype's topics and must not be used as legal evidence. GOLDEN_* identifiers and expected IDs mirror the repository's existing evals/golden_set.json; their legal accuracy and freshness have not been independently reviewed. All validity labels are NOT_VERIFIED.",
+  "corpus": [
+    {
+      "doc_id": "DOC_001",
+      "doc_number": "137/2020/NĐ-CP",
+      "title": "Quản lý, sử dụng pháo",
+      "article": "Điều 15",
+      "procedure_code": "TTPH-01",
+      "content": "Hướng dẫn hồ sơ và các bước huấn luyện kỹ thuật an toàn về pháo hoa; thông tin mẫu về cơ quan, tổ chức, giấy giới thiệu và danh sách người tham gia.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "DOC_002",
+      "doc_number": "56/2023/NĐ-CP",
+      "title": "Sửa đổi quy định quản lý pháo",
+      "article": "Điều 1",
+      "procedure_code": "TTPH-01-SD",
+      "content": "Bổ sung hình thức nộp hồ sơ trực tuyến cho thủ tục cấp giấy chứng nhận huấn luyện kỹ thuật an toàn về pháo hoa.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "DOC_003",
+      "doc_number": "36/2009/NĐ-CP",
+      "title": "Quy định quản lý sử dụng pháo trước đây",
+      "article": "Điều 5",
+      "procedure_code": "TTPH-OLD",
+      "content": "Tài liệu mẫu về quy định sản xuất, nhập khẩu và huấn luyện an toàn pháo hoa; tình trạng hiệu lực cần được đối chiếu nguồn chính thức.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "DOC_004",
+      "doc_number": "06/2024/TT-BCA",
+      "title": "Điều kiện an toàn phòng cháy chữa cháy",
+      "article": "Điều 8",
+      "procedure_code": "PCCC-02",
+      "content": "Quy trình kiểm tra điều kiện an toàn phòng cháy chữa cháy đối với cơ sở kinh doanh pháo hoa.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "doc_luat_xay_dung_2014_d102_k1_b",
+      "doc_number": "Luật Xây dựng 2014",
+      "title": "Cấp giấy phép xây dựng nhà ở riêng lẻ",
+      "article": "Điều 102 khoản 1 điểm b",
+      "procedure_code": "",
+      "content": "Thời hạn giải quyết cấp giấy phép xây dựng nhà ở riêng lẻ; mốc thời gian tính từ khi nhận đủ hồ sơ hợp lệ; phân biệt nhà ở đô thị và nông thôn.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "doc_nd_101_2024_d28_k1",
+      "doc_number": "101/2024/NĐ-CP",
+      "title": "Đăng ký đất đai và cấp giấy chứng nhận lần đầu",
+      "article": "Điều 28 khoản 1",
+      "procedure_code": "",
+      "content": "Hồ sơ đăng ký đất đai, tài sản gắn liền với đất lần đầu; đơn đăng ký theo Mẫu số 01; chứng từ nghĩa vụ tài chính hoặc giấy tờ miễn giảm nếu có.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "doc_luat_dat_dai_2024_d137",
+      "doc_number": "Luật Đất đai 2024",
+      "title": "Giấy tờ về quyền sử dụng đất",
+      "article": "Điều 137",
+      "procedure_code": "",
+      "content": "Các nhóm giấy tờ về quyền sử dụng đất được viện dẫn khi xem xét đăng ký và cấp giấy chứng nhận quyền sử dụng đất lần đầu.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "doc_bo_luat_lao_dong_2019_d35_k1_a",
+      "doc_number": "Bộ luật Lao động 2019",
+      "title": "Quyền đơn phương chấm dứt hợp đồng lao động",
+      "article": "Điều 35 khoản 1 điểm a",
+      "procedure_code": "",
+      "content": "Thời hạn báo trước khi người lao động đơn phương chấm dứt hợp đồng lao động không xác định thời hạn; trường hợp thông thường được nêu là ít nhất 45 ngày.",
+      "status": "NOT_VERIFIED"
+    },
+    {
+      "doc_id": "dvc-procedure-1.001612",
+      "doc_number": "",
+      "title": "Đăng ký thành lập hộ kinh doanh",
+      "article": "",
+      "procedure_code": "1.001612",
+      "content": "Thủ tục đăng ký thành lập hộ kinh doanh; tiếp nhận và giải quyết hồ sơ đăng ký hộ kinh doanh theo mã thủ tục hành chính.",
+      "status": "NOT_VERIFIED"
+    }
+  ],
+  "queries": [
+    {"query_id": "Q001", "query": "137/2020/NĐ-CP quy định thủ tục nào?", "relevant_ids": ["DOC_001"], "tags": ["doc_number"]},
+    {"query_id": "Q002", "query": "137/2020/ND-CP Điều 15 huấn luyện pháo hoa", "relevant_ids": ["DOC_001"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q003", "query": "Mã TTPH-01, thủ tục huấn luyện kỹ thuật an toàn về pháo hoa", "relevant_ids": ["DOC_001"], "tags": ["procedure_code"]},
+    {"query_id": "Q004", "query": "Hồ sơ và các bước để được huấn luyện an toàn pháo hoa gồm gì?", "relevant_ids": ["DOC_001"], "tags": ["paraphrase"]},
+    {"query_id": "Q005", "query": "Điều 15 của nghị định về quản lý sử dụng pháo", "relevant_ids": ["DOC_001"], "tags": ["article", "paraphrase"]},
+    {"query_id": "Q006", "query": "56/2023/NĐ-CP sửa đổi văn bản nào?", "relevant_ids": ["DOC_002"], "tags": ["doc_number"]},
+    {"query_id": "Q007", "query": "Mã TTPH-01-SD về nộp trực tuyến hồ sơ pháo hoa", "relevant_ids": ["DOC_002"], "tags": ["procedure_code"]},
+    {"query_id": "Q008", "query": "Điều 1 văn bản sửa đổi thủ tục pháo hoa trực tuyến", "relevant_ids": ["DOC_002"], "tags": ["article", "paraphrase"]},
+    {"query_id": "Q009", "query": "Nghị định 56 năm 2023 cập nhật cách nộp hồ sơ nào?", "relevant_ids": ["DOC_002"], "tags": ["doc_number", "paraphrase"]},
+    {"query_id": "Q010", "query": "Cách gửi trực tuyến hồ sơ cấp chứng nhận huấn luyện an toàn pháo hoa", "relevant_ids": ["DOC_002"], "tags": ["paraphrase"]},
+    {"query_id": "Q011", "query": "36/2009/NĐ-CP Điều 5 quy định nội dung gì?", "relevant_ids": ["DOC_003"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q012", "query": "Mã thủ tục cũ TTPH-OLD", "relevant_ids": ["DOC_003"], "tags": ["procedure_code"]},
+    {"query_id": "Q013", "query": "Tài liệu nào cần kiểm tra lại tình trạng hiệu lực về quản lý pháo?", "relevant_ids": ["DOC_003"], "tags": ["validity", "paraphrase"]},
+    {"query_id": "Q014", "query": "Quy định trước đây về sản xuất và nhập khẩu pháo hoa", "relevant_ids": ["DOC_003"], "tags": ["paraphrase"]},
+    {"query_id": "Q015", "query": "06/2024/TT-BCA Điều 8 có liên quan đến kiểm tra gì?", "relevant_ids": ["DOC_004"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q016", "query": "Mã PCCC-02 kiểm tra an toàn cơ sở kinh doanh pháo", "relevant_ids": ["DOC_004"], "tags": ["procedure_code"]},
+    {"query_id": "Q017", "query": "Quy trình kiểm tra điều kiện phòng cháy chữa cháy cho cơ sở pháo hoa", "relevant_ids": ["DOC_004"], "tags": ["paraphrase"]},
+    {"query_id": "Q018", "query": "Thông tư 06 năm 2024 về an toàn PCCC", "relevant_ids": ["DOC_004"], "tags": ["doc_number", "paraphrase"]},
+    {"query_id": "Q019", "query": "Luật Xây dựng 2014 Điều 102 khoản 1 điểm b thời hạn cấp phép", "relevant_ids": ["doc_luat_xay_dung_2014_d102_k1_b"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q020", "query": "Bao lâu giải quyết giấy phép xây dựng nhà ở riêng lẻ sau khi đủ hồ sơ?", "relevant_ids": ["doc_luat_xay_dung_2014_d102_k1_b"], "tags": ["paraphrase"]},
+    {"query_id": "Q021", "query": "Thời hạn cấp phép nhà riêng ở đô thị và nông thôn căn cứ điều nào?", "relevant_ids": ["doc_luat_xay_dung_2014_d102_k1_b"], "tags": ["article", "paraphrase"]},
+    {"query_id": "Q022", "query": "Điểm b khoản 1 Điều 102 Luật Xây dựng nói về thủ tục gì?", "relevant_ids": ["doc_luat_xay_dung_2014_d102_k1_b"], "tags": ["article"]},
+    {"query_id": "Q023", "query": "Nghị định 101/2024/NĐ-CP Điều 28 khoản 1 hồ sơ mẫu số 01", "relevant_ids": ["doc_nd_101_2024_d28_k1"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q024", "query": "Mẫu 01 đăng ký đất đai lần đầu cần những giấy tờ gì?", "relevant_ids": ["doc_nd_101_2024_d28_k1"], "tags": ["paraphrase"]},
+    {"query_id": "Q025", "query": "Chứng từ nghĩa vụ tài chính khi xin giấy chứng nhận lần đầu", "relevant_ids": ["doc_nd_101_2024_d28_k1"], "tags": ["paraphrase"]},
+    {"query_id": "Q026", "query": "Luật Đất đai 2024 Điều 137 giấy tờ quyền sử dụng đất", "relevant_ids": ["doc_luat_dat_dai_2024_d137"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q027", "query": "Căn cứ các giấy tờ chứng minh quyền sử dụng đất theo điều khoản nào?", "relevant_ids": ["doc_luat_dat_dai_2024_d137"], "tags": ["paraphrase"]},
+    {"query_id": "Q028", "query": "Điều 137 Luật đất đai quy định nhóm giấy tờ gì?", "relevant_ids": ["doc_luat_dat_dai_2024_d137"], "tags": ["article"]},
+    {"query_id": "Q029", "query": "Hồ sơ đăng ký đất đai lần đầu viện dẫn cả Nghị định 101/2024 và Điều 137 Luật Đất đai", "relevant_ids": ["doc_nd_101_2024_d28_k1", "doc_luat_dat_dai_2024_d137"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q030", "query": "Bộ luật Lao động 2019 Điều 35 khoản 1 điểm a báo trước bao lâu?", "relevant_ids": ["doc_bo_luat_lao_dong_2019_d35_k1_a"], "tags": ["doc_number", "article"]},
+    {"query_id": "Q031", "query": "Hợp đồng lao động không xác định thời hạn người lao động phải báo trước mấy ngày?", "relevant_ids": ["doc_bo_luat_lao_dong_2019_d35_k1_a"], "tags": ["paraphrase"]},
+    {"query_id": "Q032", "query": "Đơn phương chấm dứt hợp đồng không xác định thời hạn căn cứ Điều 35", "relevant_ids": ["doc_bo_luat_lao_dong_2019_d35_k1_a"], "tags": ["article", "paraphrase"]},
+    {"query_id": "Q033", "query": "Mốc 45 ngày báo trước khi nghỉ việc theo Bộ luật Lao động", "relevant_ids": ["doc_bo_luat_lao_dong_2019_d35_k1_a"], "tags": ["paraphrase"]},
+    {"query_id": "Q034", "query": "Thủ tục 1.001612 là thủ tục gì?", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["procedure_code"]},
+    {"query_id": "Q035", "query": "Mã 1.001612 đăng ký hộ kinh doanh", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["procedure_code"]},
+    {"query_id": "Q036", "query": "Đăng ký thành lập hộ kinh doanh cần tìm mã thủ tục nào?", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["paraphrase"]},
+    {"query_id": "Q037", "query": "Tôi muốn mở hộ kinh doanh, thủ tục đăng ký thành lập là gì?", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["paraphrase"]},
+    {"query_id": "Q038", "query": "Tra cứu quy trình tiếp nhận hồ sơ đăng ký hộ kinh doanh", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["paraphrase"]},
+    {"query_id": "Q039", "query": "Thủ tục hành chính về đăng ký thành lập hộ kinh doanh", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["paraphrase"]},
+    {"query_id": "Q040", "query": "1.001612 hộ kinh doanh hồ sơ đăng ký", "relevant_ids": ["dvc-procedure-1.001612"], "tags": ["procedure_code"]}
+  ]
+}

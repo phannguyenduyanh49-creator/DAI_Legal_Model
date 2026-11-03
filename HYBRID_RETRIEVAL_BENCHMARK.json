@@ -1,0 +1,935 @@
+{
+  "classification": "Synthetic closed-world prototype benchmark; not a legal-quality, production-corpus, Qdrant, or BGE-M3 measurement.",
+  "corpus_size": 9,
+  "query_count": 40,
+  "top_k": 5,
+  "relevance": "Binary document-level judgments supplied with the sample set.",
+  "metrics": {
+    "bm25": {
+      "recall": 0.95,
+      "precision": 0.19500000000000012,
+      "mrr": 0.8604166666666668,
+      "ndcg": 0.8830866454696942
+    },
+    "exact_metadata": {
+      "recall": 0.4875,
+      "precision": 0.10000000000000002,
+      "mrr": 0.5,
+      "ndcg": 0.4903286798191365
+    },
+    "bm25_plus_exact_rrf": {
+      "recall": 1.0,
+      "precision": 0.20500000000000007,
+      "mrr": 0.9666666666666666,
+      "ndcg": 0.975
+    }
+  },
+  "by_tag": {
+    "article": {
+      "bm25": {
+        "recall": 1.0,
+        "precision": 0.21428571428571427,
+        "mrr": 0.8273809523809523,
+        "ndcg": 0.8708954332297364
+      },
+      "exact_metadata": {
+        "recall": 0.75,
+        "precision": 0.1571428571428571,
+        "mrr": 0.7857142857142857,
+        "ndcg": 0.7580819423403898
+      },
+      "bm25_plus_exact_rrf": {
+        "recall": 1.0,
+        "precision": 0.21428571428571427,
+        "mrr": 0.9523809523809523,
+        "ndcg": 0.9642857142857143
+      }
+    },
+    "doc_number": {
+      "bm25": {
+        "recall": 0.9166666666666666,
+        "precision": 0.19999999999999998,
+        "mrr": 0.7569444444444443,
+        "ndcg": 0.7968005259704043
+      },
+      "exact_metadata": {
+        "recall": 0.7916666666666666,
+        "precision": 0.16666666666666666,
+        "mrr": 0.8333333333333334,
+        "ndcg": 0.8010955993971215
+      },
+      "bm25_plus_exact_rrf": {
+        "recall": 1.0,
+        "precision": 0.21666666666666667,
+        "mrr": 0.9444444444444443,
+        "ndcg": 0.9583333333333334
+      }
+    },
+    "paraphrase": {
+      "bm25": {
+        "recall": 1.0,
+        "precision": 0.20000000000000004,
+        "mrr": 0.9444444444444444,
+        "ndcg": 0.9586157025510218
+      },
+      "exact_metadata": {
+        "recall": 0.09523809523809523,
+        "precision": 0.01904761904761905,
+        "mrr": 0.09523809523809523,
+        "ndcg": 0.09523809523809523
+      },
+      "bm25_plus_exact_rrf": {
+        "recall": 1.0,
+        "precision": 0.20000000000000004,
+        "mrr": 0.9682539682539684,
+        "ndcg": 0.9761904761904762
+      }
+    },
+    "procedure_code": {
+      "bm25": {
+        "recall": 0.8571428571428571,
+        "precision": 0.17142857142857143,
+        "mrr": 0.7857142857142857,
+        "ndcg": 0.804418536224494
+      },
+      "exact_metadata": {
+        "recall": 1.0,
+        "precision": 0.19999999999999998,
+        "mrr": 1.0,
+        "ndcg": 1.0
+      },
+      "bm25_plus_exact_rrf": {
+        "recall": 1.0,
+        "precision": 0.19999999999999998,
+        "mrr": 1.0,
+        "ndcg": 1.0
+      }
+    },
+    "validity": {
+      "bm25": {
+        "recall": 1.0,
+        "precision": 0.2,
+        "mrr": 1.0,
+        "ndcg": 1.0
+      },
+      "exact_metadata": {
+        "recall": 0.0,
+        "precision": 0.0,
+        "mrr": 0.0,
+        "ndcg": 0.0
+      },
+      "bm25_plus_exact_rrf": {
+        "recall": 1.0,
+        "precision": 0.2,
+        "mrr": 1.0,
+        "ndcg": 1.0
+      }
+    }
+  },
+  "runs": {
+    "bm25": {
+      "Q001": [
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_004",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q002": [
+        "DOC_004",
+        "DOC_002",
+        "DOC_003",
+        "DOC_001"
+      ],
+      "Q003": [
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q004": [
+        "DOC_001",
+        "DOC_003",
+        "DOC_002",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q005": [
+        "DOC_003",
+        "DOC_001",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_004",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q006": [
+        "DOC_002",
+        "DOC_004",
+        "DOC_003"
+      ],
+      "Q007": [
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_003",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q008": [
+        "DOC_002",
+        "DOC_004",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_001"
+      ],
+      "Q009": [
+        "DOC_002",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_nd_101_2024_d28_k1",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_001",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_004"
+      ],
+      "Q010": [
+        "DOC_002",
+        "DOC_001",
+        "DOC_003",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612"
+      ],
+      "Q011": [
+        "DOC_004",
+        "DOC_003",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_001"
+      ],
+      "Q012": [
+        "dvc-procedure-1.001612",
+        "DOC_002"
+      ],
+      "Q013": [
+        "DOC_003",
+        "DOC_004",
+        "DOC_001",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q014": [
+        "DOC_003",
+        "DOC_002",
+        "DOC_001",
+        "DOC_004",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q015": [
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_001",
+        "DOC_002",
+        "DOC_003"
+      ],
+      "Q016": [
+        "DOC_004",
+        "dvc-procedure-1.001612",
+        "DOC_001",
+        "DOC_002",
+        "DOC_003",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q017": [
+        "DOC_004",
+        "DOC_002",
+        "DOC_003",
+        "DOC_001",
+        "doc_nd_101_2024_d28_k1",
+        "dvc-procedure-1.001612",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q018": [
+        "DOC_001",
+        "DOC_002",
+        "DOC_004",
+        "DOC_003",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q019": [
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_002",
+        "DOC_003",
+        "DOC_001",
+        "doc_nd_101_2024_d28_k1"
+      ],
+      "Q020": [
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "dvc-procedure-1.001612",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_001",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002",
+        "DOC_003",
+        "DOC_004"
+      ],
+      "Q021": [
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_004",
+        "DOC_003",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612"
+      ],
+      "Q022": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "DOC_003"
+      ],
+      "Q023": [
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_003",
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q024": [
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "DOC_003",
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q025": [
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_001"
+      ],
+      "Q026": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_001",
+        "DOC_004",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_002"
+      ],
+      "Q027": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_001",
+        "DOC_003",
+        "DOC_004",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q028": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_003",
+        "DOC_002",
+        "DOC_001",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q029": [
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612",
+        "DOC_001",
+        "DOC_004",
+        "DOC_002",
+        "DOC_003",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q030": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_004",
+        "DOC_002",
+        "DOC_003"
+      ],
+      "Q031": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "DOC_001",
+        "DOC_002"
+      ],
+      "Q032": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002"
+      ],
+      "Q033": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q034": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q035": [
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_002",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q036": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_003",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q037": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q038": [
+        "dvc-procedure-1.001612",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003"
+      ],
+      "Q039": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "DOC_003",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q040": [
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ]
+    },
+    "exact_metadata": {
+      "Q001": [
+        "DOC_001"
+      ],
+      "Q002": [
+        "DOC_001"
+      ],
+      "Q003": [
+        "DOC_001"
+      ],
+      "Q004": [],
+      "Q005": [
+        "DOC_001"
+      ],
+      "Q006": [
+        "DOC_002"
+      ],
+      "Q007": [
+        "DOC_002"
+      ],
+      "Q008": [
+        "DOC_002"
+      ],
+      "Q009": [],
+      "Q010": [],
+      "Q011": [
+        "DOC_003"
+      ],
+      "Q012": [
+        "DOC_003"
+      ],
+      "Q013": [],
+      "Q014": [],
+      "Q015": [
+        "DOC_004"
+      ],
+      "Q016": [
+        "DOC_004"
+      ],
+      "Q017": [],
+      "Q018": [],
+      "Q019": [
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q020": [],
+      "Q021": [],
+      "Q022": [],
+      "Q023": [
+        "doc_nd_101_2024_d28_k1"
+      ],
+      "Q024": [],
+      "Q025": [],
+      "Q026": [
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q027": [],
+      "Q028": [
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q029": [
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q030": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q031": [],
+      "Q032": [],
+      "Q033": [],
+      "Q034": [
+        "dvc-procedure-1.001612"
+      ],
+      "Q035": [
+        "dvc-procedure-1.001612"
+      ],
+      "Q036": [],
+      "Q037": [],
+      "Q038": [],
+      "Q039": [],
+      "Q040": [
+        "dvc-procedure-1.001612"
+      ]
+    },
+    "bm25_plus_exact_rrf": {
+      "Q001": [
+        "DOC_001",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_004",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q002": [
+        "DOC_001",
+        "DOC_004",
+        "DOC_002",
+        "DOC_003"
+      ],
+      "Q003": [
+        "DOC_001",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q004": [
+        "DOC_001",
+        "DOC_003",
+        "DOC_002",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q005": [
+        "DOC_001",
+        "DOC_003",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_004",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q006": [
+        "DOC_002",
+        "DOC_004",
+        "DOC_003"
+      ],
+      "Q007": [
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_003",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q008": [
+        "DOC_002",
+        "DOC_004",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_001"
+      ],
+      "Q009": [
+        "DOC_002",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_nd_101_2024_d28_k1",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "DOC_001",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_004"
+      ],
+      "Q010": [
+        "DOC_002",
+        "DOC_001",
+        "DOC_003",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612"
+      ],
+      "Q011": [
+        "DOC_003",
+        "DOC_004",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_001"
+      ],
+      "Q012": [
+        "DOC_003",
+        "dvc-procedure-1.001612",
+        "DOC_002"
+      ],
+      "Q013": [
+        "DOC_003",
+        "DOC_004",
+        "DOC_001",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q014": [
+        "DOC_003",
+        "DOC_002",
+        "DOC_001",
+        "DOC_004",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "dvc-procedure-1.001612",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q015": [
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_001",
+        "DOC_002",
+        "DOC_003"
+      ],
+      "Q016": [
+        "DOC_004",
+        "dvc-procedure-1.001612",
+        "DOC_001",
+        "DOC_002",
+        "DOC_003",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q017": [
+        "DOC_004",
+        "DOC_002",
+        "DOC_003",
+        "DOC_001",
+        "doc_nd_101_2024_d28_k1",
+        "dvc-procedure-1.001612",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q018": [
+        "DOC_001",
+        "DOC_002",
+        "DOC_004",
+        "DOC_003",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q019": [
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_002",
+        "DOC_003",
+        "DOC_001",
+        "doc_nd_101_2024_d28_k1"
+      ],
+      "Q020": [
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "dvc-procedure-1.001612",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_001",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002",
+        "DOC_003",
+        "DOC_004"
+      ],
+      "Q021": [
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_004",
+        "DOC_003",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612"
+      ],
+      "Q022": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "DOC_003"
+      ],
+      "Q023": [
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_003",
+        "DOC_002",
+        "DOC_001",
+        "dvc-procedure-1.001612",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q024": [
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "DOC_003",
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q025": [
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_001"
+      ],
+      "Q026": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_001",
+        "DOC_004",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_002"
+      ],
+      "Q027": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_001",
+        "DOC_003",
+        "DOC_004",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q028": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_003",
+        "DOC_002",
+        "DOC_001",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q029": [
+        "doc_luat_dat_dai_2024_d137",
+        "doc_nd_101_2024_d28_k1",
+        "dvc-procedure-1.001612",
+        "DOC_001",
+        "DOC_004",
+        "DOC_002",
+        "DOC_003",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q030": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "DOC_004",
+        "DOC_002",
+        "DOC_003"
+      ],
+      "Q031": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "DOC_001",
+        "DOC_002"
+      ],
+      "Q032": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002"
+      ],
+      "Q033": [
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_002",
+        "dvc-procedure-1.001612",
+        "DOC_003",
+        "doc_nd_101_2024_d28_k1",
+        "doc_luat_dat_dai_2024_d137"
+      ],
+      "Q034": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a"
+      ],
+      "Q035": [
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_002",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q036": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_003",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q037": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "doc_bo_luat_lao_dong_2019_d35_k1_a",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q038": [
+        "dvc-procedure-1.001612",
+        "DOC_004",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b",
+        "DOC_003"
+      ],
+      "Q039": [
+        "dvc-procedure-1.001612",
+        "DOC_002",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "DOC_003",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ],
+      "Q040": [
+        "dvc-procedure-1.001612",
+        "doc_nd_101_2024_d28_k1",
+        "DOC_004",
+        "DOC_002",
+        "doc_luat_dat_dai_2024_d137",
+        "DOC_001",
+        "doc_luat_xay_dung_2014_d102_k1_b"
+      ]
+    }
+  }
+}
