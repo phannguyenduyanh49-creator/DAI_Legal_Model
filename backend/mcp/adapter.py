@@ -1,5 +1,7 @@
 import re
+from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from backend.evidence.schemas import Evidence
 
@@ -51,8 +53,44 @@ def mcp_dvc_result_to_evidence(result: Any) -> Optional[Evidence]:
     procedure_name = _field(text, "DVC_PROCEDURE_NAME")
     procedure_code = _field(text, "DVC_PROCEDURE_CODE")
     source_url = _field(text, "DVC_SOURCE_URL") or DVC_SOURCE_URL
-    if not source_url.startswith("https://dichvucong.gov.vn/") and source_url != DVC_SOURCE_URL:
+    try:
+        parsed_url = urlsplit(source_url)
+        valid_url = (
+            parsed_url.scheme == "https"
+            and parsed_url.hostname == "dichvucong.gov.vn"
+            and parsed_url.username is None
+            and parsed_url.password is None
+            and parsed_url.port in (None, 443)
+            and not parsed_url.fragment
+        )
+    except ValueError:
+        valid_url = False
+    if not valid_url:
         return None
+
+    metadata = {
+        "provider": "dichvucong.gov.vn",
+        "source_name": "Cổng Dịch vụ công Quốc gia",
+        "tool": "search_dichvucong",
+        "procedure_id": procedure_id,
+        "procedure_code": procedure_code,
+        "procedure_name": procedure_name,
+        "retrieval_type": "external_official_source",
+        # The legacy text envelope has no upstream retrieval timestamp. Record
+        # receipt time explicitly rather than labeling it source publication time.
+        "received_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    optional_metadata = {
+        "document_number": "DVC_DOCUMENT_NUMBER",
+        "issuing_authority": "DVC_ISSUING_AUTHORITY",
+        "effective_date": "DVC_EFFECTIVE_DATE",
+        "legal_status": "DVC_LEGAL_STATUS",
+        "upstream_retrieved_at": "DVC_RETRIEVED_AT",
+    }
+    for key, envelope_field in optional_metadata.items():
+        value = _field(text, envelope_field)
+        if value:
+            metadata[key] = value
 
     return Evidence(
         evidence_id=f"mcp:dvc:{procedure_id}",
@@ -62,14 +100,7 @@ def mcp_dvc_result_to_evidence(result: Any) -> Optional[Evidence]:
         title=procedure_name,
         content=detail_match.group(1).strip(),
         score=1.0,
-        metadata={
-            "provider": "dichvucong.gov.vn",
-            "tool": "search_dichvucong",
-            "procedure_id": procedure_id,
-            "procedure_code": procedure_code,
-            "procedure_name": procedure_name,
-            "retrieval_type": "external_official_source",
-        },
+        metadata=metadata,
     )
 
 

@@ -1,6 +1,7 @@
 const SAFE_REASON_CODES = new Set([
   "VERIFIER_NOT_PASSED",
   "CITATION_VERIFICATION_NOT_PASSED",
+  "EVIDENCE_INTEGRITY_NOT_PASSED",
   "CITATION_FORMAT_INVALID",
   "CITATION_EVIDENCE_ID_UNKNOWN",
   "CITATION_MISSING",
@@ -13,6 +14,7 @@ const SAFE_REASON_CODES = new Set([
   "CONFIDENCE_EVALUATOR_TIMEOUT",
   "GROUNDING_EVALUATOR_UNAVAILABLE",
   "GROUNDING_EVALUATOR_TIMEOUT",
+  "GROUNDING_EVALUATION_INCONCLUSIVE",
   "MODEL_API_REQUEST_FAILED",
   "MODEL_API_EMPTY_RESPONSE",
   "MODEL_API_GENERATION_FAILED",
@@ -33,7 +35,10 @@ const SAFE_FAILURE_STAGES = new Set([
 ]);
 const SAFE_VERIFIER_REASONS = new Set([
   "CLAIM_EMPTY", "CLAIM_WITHOUT_EVIDENCE", "EVIDENCE_ID_NOT_FOUND",
-  "EVIDENCE_CONTENT_EMPTY", "VERIFIER_REJECTED", "NO_CLAIMS_TO_VERIFY",
+  "EVIDENCE_CONTENT_EMPTY", "EVIDENCE_ID_AMBIGUOUS", "EVIDENCE_DOMAIN_MISMATCH",
+  "EVIDENCE_DOMAIN_METADATA_INCONSISTENT", "EVIDENCE_SOURCE_IDENTITY_MISSING",
+  "EVIDENCE_SOURCE_IDENTITY_INCONSISTENT", "EVIDENCE_PROVENANCE_MISMATCH",
+  "CITATION_FORMAT_INVALID", "VERIFIER_REJECTED", "NO_CLAIMS_TO_VERIFY",
 ]);
 const SAFE_PARSER_ERRORS = new Set([
   "MALFORMED_CITATION", "CITATION_ON_HEADING", "EMPTY_EVIDENCE_ID",
@@ -166,6 +171,10 @@ export function safeCitationAttemptDiagnostics(attempts) {
       : [];
     return {
       attempt: Number.isInteger(item.attempt) && item.attempt > 0 ? item.attempt : null,
+      generation_elapsed_ms: Number.isFinite(item.generation_elapsed_ms) && item.generation_elapsed_ms >= 0
+        ? item.generation_elapsed_ms : null,
+      model_processing_time_ms: Number.isFinite(item.model_processing_time_ms) && item.model_processing_time_ms >= 0
+        ? item.model_processing_time_ms : null,
       raw_answer_chars: Number.isInteger(item.raw_answer_chars) && item.raw_answer_chars >= 0 ? item.raw_answer_chars : null,
       claim_count: Number.isInteger(item.claim_count) && item.claim_count >= 0 ? item.claim_count : null,
       claims_with_citation: Number.isInteger(item.claims_with_citation) && item.claims_with_citation >= 0 ? item.claims_with_citation : null,

@@ -229,6 +229,63 @@ def test_domain_metadata_mismatch_fails_citation_integrity_before_grounding():
     assert grounding.seen_evidence is None
 
 
+@pytest.mark.parametrize(
+    ("metadata", "source_id", "evidence_id", "expected_error"),
+    [
+        ({"document_id": "doc-1"}, "doc-1", "domain:tourism:doc-1:1", "provenance"),
+        ({"domain_id": "tourism", "document_id": "doc-1"}, "doc-2", "domain:tourism:doc-1:1", "inconsistent"),
+        ({"domain_id": "tourism", "document_id": "doc-1"}, "doc-1", "domain:shopping:doc-1:1", "provenance"),
+    ],
+)
+def test_domain_upload_evidence_requires_consistent_traceable_identity(
+    metadata, source_id, evidence_id, expected_error
+):
+    evidence = Evidence(
+        evidence_id=evidence_id,
+        source_type="domain_upload",
+        source_id=source_id,
+        content="A source-backed fact.",
+        metadata=metadata,
+    )
+    answer = structure_answer_with_explicit_evidence(
+        f"A source-backed fact. [Evidence ID: {evidence_id}]"
+    )
+
+    result = Verifier().verify(
+        answer,
+        EvidenceBundle(query="q", evidences=[evidence]),
+        expected_domain_id="tourism",
+    )
+
+    assert result.citation_integrity_passed is False
+    assert result.passed is False
+    assert any(expected_error in error for error in result.errors)
+
+
+def test_well_formed_domain_upload_identity_passes_linkage_but_not_semantic_verification():
+    evidence = Evidence(
+        evidence_id="domain:tourism:doc-1:1",
+        source_type="domain_upload",
+        source_id="doc-1",
+        content="A source-backed fact.",
+        metadata={"domain_id": "tourism", "document_id": "doc-1"},
+    )
+    answer = structure_answer_with_explicit_evidence(
+        "A source-backed fact. [Evidence ID: domain:tourism:doc-1:1]"
+    )
+
+    result = Verifier().verify(
+        answer,
+        EvidenceBundle(query="q", evidences=[evidence]),
+        expected_domain_id="tourism",
+    )
+
+    assert result.citation_integrity_passed is True
+    assert result.claim_grounding_status == "not_evaluated"
+    assert result.passed is False
+    assert result.outcome == "evaluator_unavailable"
+
+
 def test_duplicate_evidence_ids_are_ambiguous_and_cannot_be_verified():
     first = Evidence(
         evidence_id=EVIDENCE_ID,

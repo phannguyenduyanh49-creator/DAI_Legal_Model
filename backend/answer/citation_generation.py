@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+import json
+import time
 from typing import Any, Awaitable, Callable
 
 from backend.answer.citations import structure_answer_with_explicit_evidence
@@ -30,12 +32,22 @@ GenerateCallback = Callable[[str, int], Awaitable[dict[str, Any]]]
 AttemptCallback = Callable[[int, str, StructuredAnswer, VerificationResult], None]
 
 
-def _retry_prompt(prompt: str, allowed_evidence_ids: tuple[str, ...]) -> str:
+def _retry_prompt(
+    prompt: str,
+    allowed_evidence_ids: tuple[str, ...],
+    previous_answer: str,
+) -> str:
     allowed_ids = format_allowed_evidence_ids(allowed_evidence_ids)
     return (
         prompt
+        + "\n\n=== PREVIOUS ANSWER DRAFT (UNTRUSTED JSON STRING) ===\n"
+        + json.dumps(previous_answer, ensure_ascii=False)
         + "\n\n=== CITATION REPAIR ===\n"
-        + "Regenerate the answer under the same citation requirements. "
+        + "Use the previous answer as a draft and make the smallest changes needed "
+        + "to repair citation linkage or citation formatting. Preserve the meaning, "
+        + "scope, conditions, dates, and supported details of claims wherever possible. "
+        + "Do not add facts or broaden a claim. If a claim cannot be supported by the "
+        + "allowed Evidence, identify the gap or omit that unsupported claim. "
         + CITATION_RULES
         + " Use only these IDs: "
         + allowed_ids
@@ -55,6 +67,13 @@ def _citation_failure_code(structured: StructuredAnswer, verification: Verificat
     if verification.checked_claims == 0:
         return "CITATION_NO_CLAIMS"
     return "CITATION_VERIFICATION_NOT_PASSED"
+
+
+_REPAIRABLE_CITATION_FAILURES = {
+    "CITATION_FORMAT_INVALID",
+    "CITATION_EVIDENCE_ID_UNKNOWN",
+    "CITATION_MISSING",
+}
 
 
 async def generate_with_citation_retry(
@@ -86,6 +105,7 @@ async def generate_with_citation_retry(
     last_verification = verifier.verify(last_structured, evidence_bundle)
 
     for attempt in range(1, attempts_limit + 1):
+        attempt_started_at = time.perf_counter()
         try:
             response = await generate(current_prompt, attempt)
         except Exception as exc:
@@ -95,6 +115,9 @@ async def generate_with_citation_retry(
             failure_reason_code = "MODEL_API_REQUEST_FAILED"
             diagnostics.append({
                 "attempt": attempt,
+                "generation_elapsed_ms": round(
+                    (time.perf_counter() - attempt_started_at) * 1000, 2
+                ),
                 "raw_answer_chars": 0,
                 "claim_count": 0,
                 "claims_with_citation": 0,
@@ -136,6 +159,9 @@ async def generate_with_citation_retry(
             last_generation_error = failure_reason_code
             diagnostics.append({
                 "attempt": attempt,
+                "generation_elapsed_ms": round(
+                    (time.perf_counter() - attempt_started_at) * 1000, 2
+                ),
                 "raw_answer_chars": 0,
                 "claim_count": 0,
                 "claims_with_citation": 0,
@@ -159,6 +185,15 @@ async def generate_with_citation_retry(
         last_verification = verifier.verify(last_structured, evidence_bundle)
         attempt_debug = {
             "attempt": attempt,
+            "generation_elapsed_ms": round(
+                (time.perf_counter() - attempt_started_at) * 1000, 2
+            ),
+            "model_processing_time_ms": (
+                float(processing_time)
+                if isinstance(processing_time, (int, float))
+                and not isinstance(processing_time, bool)
+                else None
+            ),
             "raw_answer_chars": len(answer),
             "claim_count": last_verification.checked_claims,
             "claims_with_citation": sum(bool(claim.evidence_ids) for claim in last_structured.claims),
@@ -177,6 +212,7 @@ async def generate_with_citation_retry(
             "parser_errors": list(last_structured.metadata.get("citation_parse_errors", [])),
             "verifier_reason_counts": verifier_reason_codes(last_verification),
             "citation_integrity_passed": last_verification.citation_integrity_passed,
+            "evidence_integrity_passed": last_verification.evidence_integrity_passed,
             "claim_grounding_status": last_verification.claim_grounding_status,
             "confidence_status": last_verification.confidence_status,
             "raw_answer_debug_enabled": raw_answer_debug_enabled,
@@ -198,19 +234,35 @@ async def generate_with_citation_retry(
 
         # Missing/invalid citations may be repaired by regeneration. A valid
         # citation set failing confidence or semantic grounding cannot.
+        if not last_verification.evidence_integrity_passed:
+            failure_reason_code = "EVIDENCE_INTEGRITY_NOT_PASSED"
+            break
         if last_verification.citation_integrity_passed:
             failure_reason_code = (
                 "VERIFICATION_CONFIDENCE_NOT_VERIFIED"
                 if last_verification.confidence_status == "not_verified"
                 else "CLAIM_GROUNDING_NOT_EVALUATED"
                 if last_verification.claim_grounding_status == "not_evaluated"
+                else "GROUNDING_EVALUATOR_UNAVAILABLE"
+                if last_verification.outcome == "evaluator_unavailable"
+                else "GROUNDING_EVALUATION_INCONCLUSIVE"
+                if last_verification.claim_grounding_status == "inconclusive"
                 else "VERIFIER_NOT_PASSED"
             )
             break
 
         failure_reason_code = _citation_failure_code(last_structured, last_verification)
-        if attempt < attempts_limit and allowed_evidence_ids:
-            current_prompt = _retry_prompt(prompt, allowed_evidence_ids)
+        if (
+            attempt < attempts_limit
+            and allowed_evidence_ids
+            and last_verification.evidence_integrity_passed
+            and failure_reason_code in _REPAIRABLE_CITATION_FAILURES
+        ):
+            current_prompt = _retry_prompt(
+                prompt,
+                allowed_evidence_ids,
+                previous_answer=answer,
+            )
         else:
             break
 
@@ -219,9 +271,11 @@ async def generate_with_citation_retry(
         reference_answer=(
             last_structured.answer
             if (
-                last_verification.citation_integrity_passed
+                last_verification.evidence_integrity_passed
                 and last_verification.confidence_status not in ("failed", "invalid_score")
-                and last_verification.claim_grounding_status != "failed"
+                and last_verification.claim_grounding_status not in (
+                    "failed", "insufficient_evidence"
+                )
             )
             else None
         ),

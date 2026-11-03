@@ -41,9 +41,65 @@ def reference_answer_failure_reason(
         return "REFERENCE_ANSWER_DATA_SUFFICIENCY_UNAVAILABLE"
     if missing_fields:
         return "REFERENCE_ANSWER_ESSENTIAL_FACTS_MISSING"
+    evidence_ids = pipeline.get("evidence_ids")
+    evidence_count = pipeline.get("evidence_count")
+    if (
+        pipeline.get("evidence_integrity_status") != "passed"
+        or not isinstance(evidence_ids, list)
+        or not evidence_ids
+        or any(not isinstance(item, str) or not item.strip() for item in evidence_ids)
+        or len(set(evidence_ids)) != len(evidence_ids)
+        or evidence_count != len(evidence_ids)
+    ):
+        return "EVIDENCE_INTEGRITY_NOT_PASSED"
 
-    if pipeline.get("citation_verification") != "passed":
-        return "CITATION_VERIFICATION_NOT_PASSED"
+    # A generated answer with citation-link problems may be shown only as an
+    # explicitly unverified reference when the exact supplied Evidence bundle
+    # passed its independent integrity checks. No source link is trusted here.
+    citation_status = pipeline.get("citation_verification")
+    if citation_status != "passed":
+        allowed_citation_failures = {
+            "CITATION_FORMAT_INVALID",
+            "CITATION_EVIDENCE_ID_UNKNOWN",
+            "CITATION_MISSING",
+            "CITATION_VERIFICATION_NOT_PASSED",
+        }
+        if pipeline.get("evidence_integrity_status") != "passed":
+            return "EVIDENCE_INTEGRITY_NOT_PASSED"
+        if pipeline.get("failure_reason_code") not in allowed_citation_failures:
+            return "CITATION_FAILURE_NOT_REPAIRABLE"
+        if pipeline.get("confidence_status") in {"failed", "invalid_score"}:
+            return "VERIFICATION_CONFIDENCE_NOT_ELIGIBLE"
+        if pipeline.get("claim_grounding_status") in {
+            "failed", "insufficient_evidence", "unsupported", "contradicted",
+        }:
+            return "CLAIM_GROUNDING_NOT_ELIGIBLE"
+        if pipeline.get("failure_stage") != "verifier":
+            return "REFERENCE_ANSWER_PIPELINE_FAILURE"
+        claim_results = pipeline.get("claim_verification_results")
+        if not isinstance(claim_results, list) or not claim_results:
+            return "CLAIM_CITATION_RESULTS_MISSING"
+        allowed_reasons = (
+            "Claim has no evidence:",
+            "Evidence not found:",
+        )
+        for claim in claim_results:
+            if not isinstance(claim, dict) or not isinstance(claim.get("claim"), str) or not claim["claim"].strip():
+                return "CLAIM_CITATION_INTEGRITY_FAILED"
+            if claim.get("claim_grounding_status") in {
+                "unsupported", "contradicted", "partially_supported", "failed",
+                "insufficient_evidence",
+            }:
+                return "CLAIM_GROUNDING_NOT_ELIGIBLE"
+            reasons = claim.get("reasons")
+            if not isinstance(reasons, list) or any(
+                not isinstance(reason, str)
+                or not reason.startswith(allowed_reasons)
+                for reason in reasons
+            ):
+                return "CLAIM_CITATION_INTEGRITY_FAILED"
+        return None
+
     if verifier_status != "not_verified":
         return "VERIFIER_STATUS_NOT_UNVERIFIED"
     if pipeline.get("verification_status") != "not_verified":
@@ -52,7 +108,9 @@ def reference_answer_failure_reason(
         "not_verified", "not_evaluated", "not_required", "passed",
     }:
         return "VERIFICATION_CONFIDENCE_NOT_ELIGIBLE"
-    if pipeline.get("claim_grounding_status") not in {"not_evaluated", "passed"}:
+    if pipeline.get("claim_grounding_status") not in {
+        "not_evaluated", "passed", "inconclusive", "evaluator_unavailable"
+    }:
         return "CLAIM_GROUNDING_NOT_ELIGIBLE"
     if not (
         pipeline.get("confidence_status") in {"not_verified", "not_evaluated"}
@@ -65,20 +123,12 @@ def reference_answer_failure_reason(
         None,
         "VERIFICATION_CONFIDENCE_NOT_VERIFIED",
         "CLAIM_GROUNDING_NOT_EVALUATED",
+        "GROUNDING_EVALUATOR_UNAVAILABLE",
+        "GROUNDING_EVALUATION_INCONCLUSIVE",
     ):
         return "REFERENCE_ANSWER_EXPLICIT_FAILURE"
 
-    evidence_ids = pipeline.get("evidence_ids")
     cited_ids = pipeline.get("cited_evidence_ids")
-    evidence_count = pipeline.get("evidence_count")
-    if not isinstance(evidence_ids, list) or not evidence_ids:
-        return "EVIDENCE_IDS_MISSING"
-    if (
-        any(not isinstance(item, str) or not item.strip() for item in evidence_ids)
-        or len(set(evidence_ids)) != len(evidence_ids)
-        or evidence_count != len(evidence_ids)
-    ):
-        return "EVIDENCE_IDS_INVALID"
     allowed = set(evidence_ids)
     if not isinstance(cited_ids, list) or not cited_ids:
         return "CITATION_TELEMETRY_MISMATCH"
@@ -109,7 +159,7 @@ def reference_answer_failure_reason(
             return "CLAIM_CITATION_INTEGRITY_FAILED"
         if claim.get("claim_grounding_status") in {
             "unsupported", "contradicted", "partially_supported", "failed",
-            "insufficient_evidence", "inconclusive", "evaluator_unavailable",
+            "insufficient_evidence",
         }:
             return "CLAIM_GROUNDING_NOT_ELIGIBLE"
         claim_ids = claim.get("evidence_ids")

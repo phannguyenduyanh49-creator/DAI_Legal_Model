@@ -12,6 +12,8 @@ class RoutingPlanResult(BaseModel):
     routing_reason: str = ""
     clarification_required: bool = False
     clarification_question: Optional[str] = None
+    risk_level: str = "unknown"
+    risk_reason_code: str = "not_evaluated"
     execution_plan: List[Dict[str, Any]] = Field(..., description="Kế hoạch hành động chi tiết dạng đa bước (Planner Steps)")
     target_tools: List[str] = Field(..., description="Danh sách các Agent Tools / Micro-services cần kích hoạt")
 
@@ -73,16 +75,19 @@ class DomainRouterPlanner:
             if category != max(category_scores, key=category_scores.get)
             and max(category_scores.values()) - score <= self.AMBIGUITY_MARGIN
         ] if category_scores else []
-        competing_strong_categories = (
-            len(strong_categories) > 1
-            and {"legal", "tourism"}.issubset(strong_categories)
-        )
+        competing_strong_categories = len(strong_categories) > 1
 
         if domain_hint:
-            hinted_domain = self.registry.route_domain_id(domain_hint)
+            normalized_hint = domain_hint.strip().lower()
+            hinted_domain = self.registry.route_domain_id(normalized_hint)
+            # A Registry domain ID is an explicit user selection. Route aliases
+            # remain backward compatible and can still be corrected by strong
+            # content signals from the existing router.
+            if normalized_hint in self.registry.list_all_domains():
+                return hinted_domain, 1.0, "DOMAIN_HINT", False
             hinted_rules = [
                 rule for owner, rule in self.registry.iter_routing_rules()
-                if owner == hinted_domain and rule.route_id == domain_hint.strip().lower()
+                if owner == hinted_domain and rule.route_id == normalized_hint
             ]
             hinted_categories = {rule.category for rule in hinted_rules}
             if not hinted_categories:
@@ -202,13 +207,24 @@ class DomainRouterPlanner:
                 selected_domain, query_analysis
             )
 
+        risk_assessment = (
+            self.registry.classify_risk(
+                self.registry.route_domain_id(selected_domain),
+                query_analysis.cleaned_query,
+            )
+            if selected_domain is not None
+            else {"risk_level": "unknown", "reason_code": "DOMAIN_NOT_SELECTED"}
+        )
+
         return RoutingPlanResult(
             selected_domain=selected_domain,
             routing_confidence=score,
             routing_reason=reason,
             clarification_required=clarification_required,
+            risk_level=risk_assessment["risk_level"],
+            risk_reason_code=risk_assessment["reason_code"],
             clarification_question=(
-                "Câu hỏi có dấu hiệu thuộc nhiều lĩnh vực. Bạn muốn tra cứu theo pháp luật hay du lịch?"
+                "Câu hỏi có dấu hiệu thuộc nhiều lĩnh vực. Bạn muốn tra cứu theo lĩnh vực nào?"
                 if clarification_required else None
             ),
             execution_plan=execution_plan,

@@ -50,6 +50,7 @@ def unverified_reference_result(**pipeline_overrides):
         "verification_threshold": 0.85,
         "verification_status": "not_verified",
         "evidence_count": 1,
+        "evidence_integrity_status": "passed",
         "evidence_ids": [evidence_id],
         "cited_evidence_ids": [evidence_id],
         "claim_verification_results": [{
@@ -227,6 +228,72 @@ def test_reference_answer_policy_allows_only_complete_citation_linked_unverified
     assert _business_outcome(result, False, True) == "answered_unverified"
 
 
+def test_reference_answer_policy_can_show_generated_text_when_only_citations_failed():
+    result = unverified_reference_result(
+        citation_verification="failed",
+        failure_stage="verifier",
+        failure_reason_code="CITATION_MISSING",
+        cited_evidence_ids=[],
+        claim_verification_results=[{
+            "claim": "The procedure is described in the source material.",
+            "evidence_ids": [],
+            "passed": False,
+            "citation_integrity_status": "failed",
+            "claim_grounding_status": "not_evaluated",
+            "reasons": ["Claim has no evidence: The procedure is described in the source material."],
+        }],
+    )
+    result.answer = "The procedure is described in the source material."
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "failed"
+    ) is None
+    assert _business_outcome(result, False, True) == "answered_unverified"
+
+
+def test_reference_answer_policy_preserves_prose_but_does_not_trust_unknown_source_id():
+    result = unverified_reference_result(
+        citation_verification="failed",
+        failure_stage="verifier",
+        failure_reason_code="CITATION_EVIDENCE_ID_UNKNOWN",
+        cited_evidence_ids=["rag:invented"],
+        claim_verification_results=[{
+            "claim": "The source describes the process.",
+            "evidence_ids": ["rag:invented"],
+            "passed": False,
+            "citation_integrity_status": "failed",
+            "claim_grounding_status": "not_evaluated",
+            "reasons": ["Evidence not found: rag:invented"],
+        }],
+    )
+    result.answer = "The source describes the process. [Evidence ID: rag:invented]"
+
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "failed"
+    ) is None
+    assert _business_outcome(result, False, True) == "answered_unverified"
+    assert _citation_integrity_failure_reason(result) == "CITATION_VERIFICATION_NOT_PASSED"
+
+
+def test_reference_answer_policy_never_shows_answer_if_evidence_integrity_failed():
+    result = unverified_reference_result(
+        citation_verification="failed",
+        evidence_integrity_status="failed",
+        failure_stage="verifier",
+        failure_reason_code="CITATION_MISSING",
+    )
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "failed"
+    ) == "EVIDENCE_INTEGRITY_NOT_PASSED"
+
+
+@pytest.mark.parametrize("grounding", ["inconclusive", "evaluator_unavailable"])
+def test_unavailable_or_inconclusive_grounding_is_unverified_not_rejected(grounding):
+    result = unverified_reference_result(claim_grounding_status=grounding)
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "not_verified"
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
@@ -234,15 +301,13 @@ def test_reference_answer_policy_allows_only_complete_citation_linked_unverified
           "claim_verification_results": [{"passed": True, "citation_integrity_status": "passed",
                                             "evidence_ids": ["rag:other"], "reasons": []}]},
          "EVIDENCE_ID_NOT_ALLOWED"),
-        ({"citation_verification": "failed"}, "CITATION_VERIFICATION_NOT_PASSED"),
-        ({"evidence_count": 0, "evidence_ids": [], "cited_evidence_ids": [],
-          "claim_verification_results": []}, "EVIDENCE_IDS_MISSING"),
+        ({"citation_verification": "failed"}, "CITATION_FAILURE_NOT_REPAIRABLE"),
+        ({"evidence_count": 0, "evidence_ids": [], "evidence_integrity_status": "failed", "cited_evidence_ids": [],
+          "claim_verification_results": []}, "EVIDENCE_INTEGRITY_NOT_PASSED"),
         ({"enough_data": "insufficient", "missing_fields": ["fees"]},
          "REFERENCE_ANSWER_ESSENTIAL_FACTS_NOT_SUFFICIENT"),
         ({"claim_verification_results": []}, "CLAIM_CITATION_RESULTS_MISSING"),
         ({"claim_grounding_status": "insufficient_evidence"}, "CLAIM_GROUNDING_NOT_ELIGIBLE"),
-        ({"claim_grounding_status": "inconclusive"}, "CLAIM_GROUNDING_NOT_ELIGIBLE"),
-        ({"claim_grounding_status": "evaluator_unavailable"}, "CLAIM_GROUNDING_NOT_ELIGIBLE"),
         ({"confidence_status": "not_required", "claim_grounding_status": "passed"},
          "REFERENCE_ANSWER_NO_UNVERIFIED_EVALUATOR"),
     ],

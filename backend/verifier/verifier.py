@@ -40,6 +40,7 @@ class VerificationResult:
     # pipeline policy. This field describes the verifier decision only. Kept at
     # the end to preserve the positional order of the existing result fields.
     outcome: str = "not_verified"
+    evidence_integrity_passed: bool = False
 
 
 class Verifier:
@@ -87,6 +88,38 @@ class Verifier:
             evidence_id for evidence_id, count in evidence_id_counts.items()
             if count > 1
         }
+        # Validate the supplied Evidence bundle independently of how the
+        # generated answer cites it. This is the hard safety boundary for
+        # showing any generated text as an unverified reference.
+        evidence_integrity_passed = bool(evidence_bundle.evidences)
+        for evidence in evidence_bundle.evidences:
+            evidence_id = evidence.evidence_id
+            metadata = evidence.metadata if isinstance(evidence.metadata, dict) else {}
+            fields = evidence.fields if isinstance(evidence.fields, dict) else {}
+            metadata_domain = metadata.get("domain_id")
+            fields_domain = fields.get("domain_id")
+            domain_id = metadata_domain if metadata_domain is not None else fields_domain
+            if (
+                not isinstance(evidence_id, str) or not evidence_id.strip()
+                or evidence_id in duplicate_evidence_ids
+                or not isinstance(evidence.content, str) or not evidence.content.strip()
+                or (metadata_domain is not None and fields_domain is not None
+                    and metadata_domain != fields_domain)
+                or (expected_domain_id and domain_id is not None
+                    and domain_id != expected_domain_id)
+            ):
+                evidence_integrity_passed = False
+            if evidence.source_type == "domain_upload":
+                document_id = metadata.get("document_id")
+                if (
+                    not document_id or not evidence.source_id
+                    or str(document_id) != str(evidence.source_id)
+                    or not domain_id
+                    or not str(evidence_id).startswith(
+                        f"domain:{domain_id}:{document_id}:"
+                    )
+                ):
+                    evidence_integrity_passed = False
         evidence_map = {
             evidence.evidence_id: evidence
             for evidence in evidence_bundle.evidences
@@ -120,13 +153,43 @@ class Verifier:
                     claim_errors.append(f"Evidence has empty content: {evidence_id}")
                 else:
                     evidence_domain_id = None
+                    evidence_fields = evidence.fields if isinstance(evidence.fields, dict) else {}
                     if isinstance(evidence.metadata, dict):
                         evidence_domain_id = evidence.metadata.get("domain_id")
-                    if evidence_domain_id is None and isinstance(evidence.fields, dict):
-                        evidence_domain_id = evidence.fields.get("domain_id")
+                    field_domain_id = evidence_fields.get("domain_id")
+                    if (
+                        evidence_domain_id is not None
+                        and field_domain_id is not None
+                        and evidence_domain_id != field_domain_id
+                    ):
+                        claim_errors.append(f"Evidence domain metadata is inconsistent: {evidence_id}")
+                        continue
+                    if evidence_domain_id is None:
+                        evidence_domain_id = field_domain_id
                     if (
                         expected_domain_id
                         and evidence_domain_id is not None
+                        and evidence_domain_id != expected_domain_id
+                    ):
+                        claim_errors.append(f"Evidence domain mismatch: {evidence_id}")
+                        continue
+                    if evidence.source_type == "domain_upload":
+                        evidence_metadata = evidence.metadata if isinstance(evidence.metadata, dict) else {}
+                        document_id = evidence_metadata.get("document_id")
+                        if not document_id or not evidence.source_id:
+                            claim_errors.append(f"Uploaded Evidence is missing source identity: {evidence_id}")
+                            continue
+                        if str(document_id) != str(evidence.source_id):
+                            claim_errors.append(f"Uploaded Evidence source identity is inconsistent: {evidence_id}")
+                            continue
+                        if not evidence_domain_id or not str(evidence_id).startswith(
+                            f"domain:{evidence_domain_id}:{document_id}:"
+                        ):
+                            claim_errors.append(f"Uploaded Evidence ID does not match its provenance: {evidence_id}")
+                            continue
+                    if (
+                        expected_domain_id
+                        and evidence.source_type == "domain_upload"
                         and evidence_domain_id != expected_domain_id
                     ):
                         claim_errors.append(
@@ -190,10 +253,14 @@ class Verifier:
                 confidence_status = "not_verified"
                 confidence_scorer_status = "unavailable"
                 confidence_reason = "NO_CALIBRATED_CONFIDENCE_SCORER_CONFIGURED"
-            elif not citation_integrity_passed:
+            elif not citation_integrity_passed or not evidence_integrity_passed:
                 confidence_status = "not_verified"
                 confidence_scorer_status = "not_run"
-                confidence_reason = "CITATION_INTEGRITY_NOT_PASSED"
+                confidence_reason = (
+                    "EVIDENCE_INTEGRITY_NOT_PASSED"
+                    if not evidence_integrity_passed
+                    else "CITATION_INTEGRITY_NOT_PASSED"
+                )
             else:
                 try:
                     assessment = self.confidence_scorer.score(
@@ -254,7 +321,11 @@ class Verifier:
         grounding_status = "not_evaluated"
         semantic_support_evaluated = False
 
-        if self.grounding_scorer is not None and citation_integrity_passed:
+        if (
+            self.grounding_scorer is not None
+            and citation_integrity_passed
+            and evidence_integrity_passed
+        ):
             assessments: list[str] = []
             scorer_failed = False
             grounding_scorer_status = "completed"
@@ -353,6 +424,8 @@ class Verifier:
             grounding_reason = "CITATION_INTEGRITY_NOT_PASSED"
 
         passed = (
+            evidence_integrity_passed
+            and
             citation_integrity_passed
             and confidence_passed
             and grounding_status == "passed"
@@ -361,7 +434,8 @@ class Verifier:
         outcome = (
             "verified" if passed
             else "failed" if (
-                not citation_integrity_passed
+                not evidence_integrity_passed
+                or not citation_integrity_passed
                 or confidence_status in {"failed", "invalid_threshold"}
                 or grounding_status in {"failed", "insufficient_evidence"}
             )
@@ -383,6 +457,7 @@ class Verifier:
             passed=passed,
             outcome=outcome,
             citation_integrity_passed=citation_integrity_passed,
+            evidence_integrity_passed=evidence_integrity_passed,
             claim_grounding_status=grounding_status,
             confidence_score=confidence_score,
             confidence_threshold=minimum_confidence,

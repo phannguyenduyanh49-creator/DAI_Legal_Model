@@ -78,7 +78,7 @@ def test_frontend_legal_ai_hint_routes_to_the_same_registered_legal_domain():
     ).domain_config.domain_id == "legal_ai"
 
 
-def test_company_question_auto_routes_to_legal_and_stays_legal_with_stale_nonlegal_hint():
+def test_company_question_auto_routes_to_legal_but_explicit_tourism_selection_wins():
     query = "Thủ tục thành lập công ty cổ phần là gì?"
     analysis = AnalysisResult(
         original_query=query,
@@ -94,10 +94,10 @@ def test_company_question_auto_routes_to_legal_and_stays_legal_with_stale_nonleg
     assert middleware.apply(automatic.selected_domain).domain_config.domain_id == "legal_ai"
     assert middleware.apply(automatic.selected_domain).domain_config.knowledge_collection == "legal_docs_bge_m3"
 
-    stale_tourism = router.process(analysis, domain_hint="tourism")
-    assert stale_tourism.selected_domain == "enterprise_law"
-    assert middleware.apply(stale_tourism.selected_domain).domain_config.domain_id == "legal_ai"
-    assert middleware.apply(stale_tourism.selected_domain).domain_config.knowledge_collection == "legal_docs_bge_m3"
+    explicit_tourism = router.process(analysis, domain_hint="tourism")
+    assert explicit_tourism.selected_domain == "tourism"
+    assert middleware.apply(explicit_tourism.selected_domain).domain_config.domain_id == "tourism"
+    assert middleware.apply(explicit_tourism.selected_domain).domain_config.knowledge_collection is None
 
     generic_analysis = AnalysisResult(
         original_query="What time does the shuttle leave?",
@@ -122,7 +122,7 @@ def test_company_question_auto_routes_to_legal_and_stays_legal_with_stale_nonleg
         "Thời hạn giải quyết hồ sơ đăng ký doanh nghiệp là bao lâu?",
     ],
 )
-def test_reported_legal_queries_override_stale_tourism_hint_and_enable_legal_sources(query):
+def test_explicit_tourism_selection_keeps_legal_questions_out_of_legal_sources(query):
     analysis = AnalysisResult(
         original_query=query,
         cleaned_query=query,
@@ -132,10 +132,14 @@ def test_reported_legal_queries_override_stale_tourism_hint_and_enable_legal_sou
     routing = DomainRouterPlanner().process(analysis, domain_hint="tourism")
     policy = PolicyEnforcementMiddleware().apply(routing.selected_domain)
 
-    assert routing.selected_domain in {"enterprise_law", "administrative_law"}
-    assert policy.domain_config.domain_id == "legal_ai"
-    assert policy.domain_config.knowledge_collection == "legal_docs_bge_m3"
-    assert "search_procedure" in policy.allowed_mcp_tools
+    assert routing.selected_domain == "tourism"
+    assert policy.domain_config.domain_id == "tourism"
+    assert policy.domain_config.knowledge_collection is None
+    assert policy.allowed_mcp_tools == ()
+    assert retrieval_collections_for_domain(
+        policy.domain_config.domain_id,
+        {"legal_docs_bge_m3", "domain_documents_tourism"}.__contains__,
+    ) == ["domain_documents_tourism"]
 
 
 def test_mcp_result_becomes_structured_evidence():
@@ -151,6 +155,27 @@ def test_mcp_result_becomes_structured_evidence():
     assert evidence.source_type == "mcp"
     assert evidence.content == "Ho so gom giay to hop le."
     assert evidence.metadata["tool"] == "search_dichvucong"
+    assert evidence.metadata["source_name"] == "Cổng Dịch vụ công Quốc gia"
+    assert evidence.metadata["received_at_utc"].endswith("+00:00")
+    assert "effective_date" not in evidence.metadata
+
+
+@pytest.mark.parametrize("source_url", [
+    "http://dichvucong.gov.vn",
+    "https://dichvucong.gov.vn.evil.example/document",
+    "https://dichvucong.gov.vn@evil.example/document",
+    "https://user@dichvucong.gov.vn/document",
+    "https://dichvucong.gov.vn:8443/document",
+    "https://dichvucong.gov.vn/document#fragment",
+])
+def test_mcp_evidence_rejects_urls_outside_exact_https_allowlist(source_url):
+    result = (
+        "DVC_OFFICIAL_PROCEDURE\nDVC_PROCEDURE_ID: 456\n"
+        f"DVC_SOURCE_URL: {source_url}\n"
+        "DVC_DETAIL_BEGIN\nSource text\nDVC_DETAIL_END"
+    )
+
+    assert mcp_dvc_result_to_evidence(result) is None
 
 
 def test_mcp_evidence_id_survives_builder_and_prompt_assembly():

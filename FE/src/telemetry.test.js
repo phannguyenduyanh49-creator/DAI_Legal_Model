@@ -53,6 +53,8 @@ test("retrieval collection availability uses only allowlisted domain states", ()
 test("attempt diagnostics expose safe counts but never raw model text or unknown ID values", () => {
   const safe = safeCitationAttemptDiagnostics([{
     attempt: 2,
+    generation_elapsed_ms: 12000,
+    model_processing_time_ms: 11000,
     raw_answer: "private model answer",
     raw_answer_chars: 1200,
     claim_count: 4,
@@ -68,6 +70,8 @@ test("attempt diagnostics expose safe counts but never raw model text or unknown
 
   assert.equal(safe.length, 1);
   assert.equal(safe[0].unknown_evidence_count, 1);
+  assert.equal(safe[0].generation_elapsed_ms, 12000);
+  assert.equal(safe[0].model_processing_time_ms, 11000);
   assert.deepEqual(safe[0].verifier_reasons, ["CLAIM_WITHOUT_EVIDENCE: 3"]);
   assert.equal(JSON.stringify(safe).includes("private"), false);
   assert.equal(JSON.stringify(safe).includes("1200"), true);

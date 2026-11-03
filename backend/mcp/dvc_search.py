@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit
 
 
 class DVCUpstreamError(RuntimeError):
@@ -164,6 +165,21 @@ def extract_dvc_rows(response: Any) -> list[dict]:
 
 
 def fetch_dvc_rows(query: str, post_json: Callable[[str, dict], Any], endpoint: str) -> list[dict]:
+    try:
+        parsed_endpoint = urlsplit(str(endpoint))
+        endpoint_allowed = (
+            parsed_endpoint.scheme == "https"
+            and parsed_endpoint.hostname == "dichvucong.gov.vn"
+            and parsed_endpoint.username is None
+            and parsed_endpoint.password is None
+            and parsed_endpoint.port in (None, 443)
+            and not parsed_endpoint.fragment
+        )
+    except ValueError:
+        endpoint_allowed = False
+    if not endpoint_allowed:
+        raise DVCUpstreamError("DVC endpoint is outside the configured HTTPS host allowlist")
+
     payload = {
         "limit": 10,
         "lastId": "",

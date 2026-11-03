@@ -8,7 +8,7 @@ import uuid
 import httpx
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, status
@@ -27,6 +27,7 @@ from backend.query_analysis import QueryAnalysisService, AnalysisResult
 from backend.orchestrator import DomainRouterPlanner, RoutingPlanResult
 from backend.domain_registry import registry_service, domain_router
 from backend.policy.middleware import PolicyEnforcementMiddleware
+from backend.response_style import resolve_response_style
 # ==============================================================================
 # CẤU HÌNH HỆ THỐNG LOGGING & ENCODING UTF-8 (HỖ TRỢ WINDOWS CONSOLE)
 # ==============================================================================
@@ -238,6 +239,11 @@ class QueryRequest(BaseModel):
     allow_external: bool = Field(
         default=False,
         description="Chỉ cho phép tra cứu nguồn ngoài khi người dùng chủ động đồng ý",
+    )
+
+    response_style: Literal["default", "strict", "friendly"] = Field(
+        default="default",
+        description="Presentation tone only; does not alter domain policy or verification requirements.",
     )
 
     @field_validator("query")
@@ -528,9 +534,16 @@ class CoreAPIGateway:
         @self.app.post("/api/v2/domains/{domain_id}/documents", tags=["Domain Documents"])
         async def upload_domain_document(domain_id: str, file: UploadFile = File(...)):
             try:
-                registry_service.get_domain_config(domain_id)
+                domain_config = registry_service.get_domain_config(domain_id)
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="Unknown domain") from exc
+            if not domain_config.enabled:
+                raise HTTPException(status_code=409, detail="Domain is disabled")
+            if not domain_config.upload_enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Document upload is not enabled for this domain",
+                )
 
             content = await file.read(2 * 1024 * 1024 + 1)
             filename = file.filename or "document.txt"
@@ -634,7 +647,11 @@ class CoreAPIGateway:
                     except KeyError as exc:
                         raise HTTPException(
                             status_code=422,
-                            detail="Requested domain is not registered",
+                            detail=(
+                                "Requested domain is disabled"
+                                if "disabled" in str(exc).lower()
+                                else "Requested domain is not registered"
+                            ),
                         ) from exc
 
                 # BƯỚC 1: Gọi Module Query Analysis & Clarification (Thay thế Synonym Mapping)
@@ -732,11 +749,43 @@ class CoreAPIGateway:
                         "Trả lời rõ ràng, thân thiện và dễ hiểu. "
                         "Phân biệt thông tin đã xác minh với thông tin chưa chắc chắn."
                     )
+                resolved_response_style = resolve_response_style(
+                    request_payload.response_style,
+                    registry_domain_id,
+                )
+                if resolved_response_style == "friendly":
+                    system_instruction += (
+                        " Requested response style: friendly. Use a warm, approachable, plain-language presentation, and address every part of the question."
+                    )
+                else:
+                    system_instruction += (
+                        " Requested response style: strict. Use formal, evidence-focused phrasing and give enough detail to answer every part."
+                    )
+                system_instruction += (
+                    " This is presentation tone only. Preserve all domain policy, "
+                    "Evidence requirements, citation checks, safety rules, and verifier outcomes."
+                )
+
                 if domain_config.policy.risk_alert_enabled:
                     system_instruction += (
                         " Khi thông tin có thể ảnh hưởng đến quyền, nghĩa vụ hoặc "
                         "thời hạn pháp lý, nhắc người dùng xác minh với văn bản "
                         "và cơ quan có thẩm quyền; nêu rõ nếu bằng chứng hiện có chưa đủ."
+                    )
+                if routing_plan_result.risk_level == "critical":
+                    system_instruction += (
+                        " The request matches a critical risk phrase. Do not diagnose, prescribe, "
+                        "or delay urgent care. If this describes a current emergency, tell the user "
+                        "to contact local emergency services immediately."
+                    )
+                elif (
+                    routing_plan_result.risk_level == "high"
+                    and routing_plan_result.risk_reason_code != "DOMAIN_DEFAULT_RISK_LEVEL"
+                ):
+                    system_instruction += (
+                        " The request matches a high-risk or time-sensitive phrase. Do not present "
+                        "the response as personalized professional advice; state evidence limits "
+                        "and the source date when available."
                     )
 
                 # BƯỚC 4: Gọi pipeline Retrieval -> Evidence -> Prompt -> Qwen
@@ -782,6 +831,7 @@ class CoreAPIGateway:
                     "prompt_assembly",
                     "model_api",
                     "citation_verification",
+                    "evidence_integrity_status",
                     "confidence_status",
                     "confidence_score",
                     "confidence_scorer_status",
@@ -992,6 +1042,8 @@ class CoreAPIGateway:
                     ),
                     domain_policy={
                         "domain_id": domain_config.domain_id,
+                        "risk_level": routing_plan_result.risk_level,
+                        "risk_reason_code": routing_plan_result.risk_reason_code,
                         "mode": domain_config.policy.mode,
                         "verification_threshold": (
                             domain_config.policy.verification_threshold

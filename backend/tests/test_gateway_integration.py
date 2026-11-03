@@ -2,10 +2,18 @@ import json
 from unittest.mock import patch
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from backend import core_gateway
 from backend.orchestrator import RoutingPlanResult
+
+
+def test_response_style_accepts_domain_default_and_rejects_unsupported_values():
+    assert core_gateway.QueryRequest(query="What is the process?").response_style == "default"
+    assert core_gateway.QueryRequest(query="What is the process?", response_style="strict").response_style == "strict"
+    with pytest.raises(ValueError):
+        core_gateway.QueryRequest(query="What is the process?", response_style="creative")
 
 
 def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(caplog):
@@ -37,6 +45,7 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
             "verifier_reason_counts": {"CLAIM_WITHOUT_EVIDENCE": 1},
         }],
         "evidence_count": 1,
+        "evidence_integrity_status": "passed",
         "evidence_ids": [evidence_id],
         "evidence_sources": [{
             "evidence_id": evidence_id,
@@ -95,7 +104,7 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
     ):
         response = client.post(
             "/api/v2/legal-query",
-            json={"query": "Câu hỏi kiểm thử", "enable_hyde": False},
+            json={"query": "Câu hỏi kiểm thử", "enable_hyde": False, "response_style": "friendly"},
         )
 
     assert response.status_code == 200
@@ -127,6 +136,8 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
     assert "Reply tone: friendly." in captured["body"]["system_instruction"]
     assert "xác minh với văn bản" not in captured["body"]["system_instruction"]
     assert "Language style:" in captured["body"]["system_instruction"]
+    assert "Requested response style: friendly" in captured["body"]["system_instruction"]
+    assert "Preserve all domain policy" in captured["body"]["system_instruction"]
     assert data["request_id"].startswith("trace_legal_")
     assert "CÃ¢u há»i kiá»ƒm thá»­" not in caplog.text
     assert answer not in caplog.text
@@ -154,6 +165,7 @@ def test_gateway_returns_clearly_labeled_reference_answer_when_minimum_safeguard
         "verification_status": "not_verified",
         "verification_threshold": 0.85,
         "evidence_count": 1,
+        "evidence_integrity_status": "passed",
         "evidence_ids": [evidence_id],
         "cited_evidence_ids": [evidence_id],
         "claim_verification_results": [{
@@ -230,6 +242,55 @@ def test_gateway_returns_clearly_labeled_reference_answer_when_minimum_safeguard
     assert execution["confidence_status"] == "not_verified"
     assert execution["response_outcome"] == execution["core_response_outcome"]
     assert execution["core_gateway_outcome_match"] is True
+
+
+def test_gateway_returns_answer_unverified_when_citation_is_missing_but_evidence_is_valid():
+    answer = "The material describes the procedure, but the model omitted its citation."
+    pipeline = {
+        "retrieval": "completed", "reranking": "completed",
+        "evidence_builder": "completed", "enough_data": "sufficient",
+        "answer_data_sufficiency": "sufficient", "required_fields": ["facts"],
+        "missing_fields": [], "prompt_assembly": "completed", "model_api": "completed",
+        "citation_verification": "failed", "evidence_integrity_status": "passed",
+        "claim_grounding_status": "not_evaluated", "confidence_status": "not_verified",
+        "verification_status": "failed", "evidence_count": 1,
+        "evidence_ids": ["rag:prompt-evidence"], "cited_evidence_ids": [],
+        "claim_verification_results": [{
+            "claim": answer, "evidence_ids": [], "passed": False,
+            "citation_integrity_status": "failed", "claim_grounding_status": "not_evaluated",
+            "reasons": [f"Claim has no evidence: {answer}"],
+        }],
+        "failure_stage": "verifier", "failure_reason_code": "CITATION_MISSING",
+    }
+    sse = (
+        "data: " + json.dumps({"delta": answer}) + "\n\n"
+        + "data: " + json.dumps({"status": "done", "outcome": "answered_unverified",
+                                  "verifier": "failed", "pipeline": pipeline}) + "\n\n"
+    )
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream; charset=utf-8"}
+        text = sse
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+        async def post(self, *_args, **_kwargs): return FakeResponse()
+
+    with patch.object(core_gateway.httpx, "AsyncClient", FakeAsyncClient), TestClient(core_gateway.app) as client:
+        response = client.post("/api/v2/legal-query", json={"query": "Question requiring evidence?"})
+
+    data = response.json()
+    assert response.status_code == 200
+    assert data["outcome"] == "answered_unverified"
+    assert data["answer"] == answer
+    assert data["pipeline_execution"]["answer_withheld"] is False
+    assert data["pipeline_execution"]["evidence_integrity_status"] == "passed"
+    assert data["pipeline_execution"]["citation_verification"] == "failed"
 
 
 def test_gateway_preserves_empty_evidence_failure_from_sse_and_withholds_answer():
@@ -420,6 +481,56 @@ def test_gateway_upload_forwards_document_to_registered_domain_only():
     assert invalid.status_code == 404
 
 
+def test_gateway_shopping_xlsx_upload_uses_registered_domain_and_core_route():
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        is_success = True
+
+        def json(self):
+            return {
+                "status": "indexed",
+                "domain_id": "shopping",
+                "document_id": "shopping-doc-1",
+                "title": "Mua_Sam_Sai_Gon_100_San_Pham.xlsx",
+                "chunk_count": 100,
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, files):
+            captured.update(url=url, files=files)
+            return FakeResponse()
+
+    filename = "Mua_Sam_Sai_Gon_100_San_Pham.xlsx"
+    with (
+        patch.object(core_gateway.httpx, "AsyncClient", FakeAsyncClient),
+        TestClient(core_gateway.app) as client,
+    ):
+        targets = client.get("/api/v2/domains/upload-targets")
+        response = client.post(
+            "/api/v2/domains/shopping/documents",
+            files={"file": (filename, b"xlsx fixture", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+
+    assert targets.status_code == 200
+    assert "shopping" in [item["domain_id"] for item in targets.json()["domains"]]
+    assert response.status_code == 200
+    assert response.json()["status"] == "indexed"
+    assert response.json()["domain_id"] == "shopping"
+    assert captured["url"].endswith("/api/v1/domains/shopping/documents")
+    assert captured["files"]["file"][0] == filename
+
+
 def test_gateway_rejects_unregistered_domain_hint_before_core_call():
     with TestClient(core_gateway.app) as client:
         response = client.post(
@@ -428,6 +539,77 @@ def test_gateway_rejects_unregistered_domain_hint_before_core_call():
         )
 
     assert response.status_code == 422
+
+
+def test_gateway_reports_disabled_selected_domain_without_calling_core():
+    registry = core_gateway.registry_service
+    original = registry.get_domain_config("tourism")
+    registry._registry["tourism"] = original.model_copy(update={"enabled": False})
+    try:
+        with TestClient(core_gateway.app) as client:
+            response = client.post(
+                "/api/v2/legal-query",
+                json={"query": "Which destination?", "domain_hint": "tourism"},
+            )
+    finally:
+        registry._registry["tourism"] = original
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Requested domain is disabled"
+
+
+def test_gateway_propagates_explicit_chat_domain_to_core_and_response_metadata():
+    captured = {}
+    sse_body = (
+        "event: chunk\n"
+        'data: {"delta":"No matching shopping Evidence."}\n\n'
+        "event: done\n"
+        'data: {"status":"done","outcome":"withheld",'
+        '"verifier":"not_verified","pipeline":{"retrieval":"no_match",'
+        '"evidence_count":0,"model_api":"not_started"}}\n\n'
+    )
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream; charset=utf-8"}
+        text = sse_body
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, _url, json, headers):
+            captured.update(body=json, headers=headers)
+            return FakeResponse()
+
+    with (
+        patch.object(core_gateway.httpx, "AsyncClient", FakeAsyncClient),
+        TestClient(core_gateway.app) as client,
+    ):
+        response = client.post(
+            "/api/v2/legal-query",
+            json={
+                "query": "What documents are needed to establish a company?",
+                "domain_hint": "shopping",
+                "enable_hyde": False,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert captured["body"]["policy_domain"] == "shopping"
+    assert data["routing_and_planning"]["selected_domain"] == "shopping"
+    assert data["domain_policy"]["domain_id"] == "shopping"
+    assert data["pipeline_execution"]["retrieval"] == "no_match"
 
 
 def test_gateway_clarifies_ambiguous_domain_without_calling_core():

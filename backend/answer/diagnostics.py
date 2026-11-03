@@ -71,9 +71,32 @@ def verifier_reason_codes(result: VerificationResult) -> dict[str, int]:
                 code = "EVIDENCE_ID_NOT_FOUND"
             elif reason.startswith("Evidence has empty content:"):
                 code = "EVIDENCE_CONTENT_EMPTY"
+            elif reason.startswith("Evidence ID is ambiguous:"):
+                code = "EVIDENCE_ID_AMBIGUOUS"
+            elif reason.startswith("Evidence domain metadata is inconsistent:"):
+                code = "EVIDENCE_DOMAIN_METADATA_INCONSISTENT"
+            elif reason.startswith("Evidence domain mismatch:"):
+                code = "EVIDENCE_DOMAIN_MISMATCH"
+            elif reason.startswith("Uploaded Evidence is missing source identity:"):
+                code = "EVIDENCE_SOURCE_IDENTITY_MISSING"
+            elif reason.startswith("Uploaded Evidence source identity is inconsistent:"):
+                code = "EVIDENCE_SOURCE_IDENTITY_INCONSISTENT"
+            elif reason.startswith("Uploaded Evidence ID does not match its provenance:"):
+                code = "EVIDENCE_PROVENANCE_MISMATCH"
+            elif reason.startswith("Citation parse error:"):
+                code = "CITATION_FORMAT_INVALID"
             else:
                 code = "VERIFIER_REJECTED"
             counts[code] += 1
+    for reason in result.errors:
+        if reason.startswith("Citation parse error:"):
+            counts["CITATION_FORMAT_INVALID"] += 1
+        elif reason.startswith("Evidence ID is ambiguous:"):
+            counts["EVIDENCE_ID_AMBIGUOUS"] += 1
+        elif reason.startswith("Evidence domain metadata is inconsistent:"):
+            counts["EVIDENCE_DOMAIN_METADATA_INCONSISTENT"] += 1
+        elif reason.startswith("Evidence domain mismatch:"):
+            counts["EVIDENCE_DOMAIN_MISMATCH"] += 1
     if result.checked_claims == 0:
         counts["NO_CLAIMS_TO_VERIFY"] += 1
     return dict(sorted(counts.items()))
@@ -145,6 +168,8 @@ def make_citation_attempt_logger(
                 verifier_reason_codes(verification_result),
                 sort_keys=True,
             ),
+            "evidence_integrity_passed=",
+            verification_result.evidence_integrity_passed,
             "claim_grounding_status=", verification_result.claim_grounding_status,
             "confidence_status=", verification_result.confidence_status,
         )

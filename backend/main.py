@@ -3,14 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from backend.catalog.service import CatalogService
+from backend.catalog.database import engine as catalog_engine
 from backend.catalog.query_parser import catalog_query_from_text
 from backend.domain_documents import (
     DomainDocumentError,
     DomainDocumentService,
     domain_document_collection,
+    domain_upload_payload_matches,
     retrieval_collections_for_domain,
 )
 from backend.domain_registry import registry_service
+from backend.search.service import DomainSearchService
+from backend.search.config import resolve_search_config
 from backend.chat_session import (
     NEGATIVE_REPLIES,
     find_pending_external_question,
@@ -31,20 +35,34 @@ from backend.evidence.normalizer import (
     procedure_to_evidence,
     catalog_record_to_evidence,
 )
+from backend.evidence.source_summary import evidence_source_summary
 
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from sentence_transformers import SentenceTransformer
 from FlagEmbedding import FlagReranker
+import torch
+from backend.model_runtime import (
+    configured_model_device,
+    pytorch_cuda_memory_snapshot,
+)
 from backend.rag.adapter import rag_results_to_evidence
+from backend.rag.structured_retrieval import get_structured_retrieval_strategy
 from backend.rag.diagnostics import (
     attach_retrieval_failure_telemetry,
     classify_retrieval_result,
     retrieval_exception_details,
 )
 from backend.rag.relevance import procedure_relevance
-from backend.rag.data_sufficiency import check_enough_data
+from backend.rag.query_intent import retrieval_breadth, should_use_exact_match_shortcut
+from backend.rag.reranker_diagnostics import (
+    build_reranker_document_text,
+    format_reranker_diagnostic,
+    score_and_select_candidates,
+)
 from backend.rag.pipeline_policy import (
     build_catalog_fallback_after_retrieval_error,
+    check_domain_data_sufficiency,
     check_evidence_sufficiency,
     choose_data_source,
 )
@@ -77,6 +95,7 @@ import hashlib
 import unicodedata
 import uuid
 import sqlite3
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 
@@ -316,6 +335,14 @@ QDRANT_URL = (
     "http://localhost:6333"
 )
 
+# Elasticsearch cutover is explicit. Qdrant remains the default until existing
+# collections have been backfilled and an ES-specific minimum score is calibrated.
+try:
+    SEARCH_BACKEND, ELASTICSEARCH_MIN_SCORE = resolve_search_config()
+except ValueError as exc:
+    raise RuntimeError(str(exc)) from exc
+search_store = DomainSearchService() if SEARCH_BACKEND == "elasticsearch" else None
+
 
 # =========================================================
 # INITIALIZE CHAT DATABASE
@@ -336,6 +363,13 @@ EMBEDDING_MODEL = (
     "BAAI/bge-m3"
 )
 
+_CUDA_AVAILABLE = torch.cuda.is_available()
+EMBEDDING_DEVICE = configured_model_device(
+    "EMBEDDING_DEVICE",
+    "cuda",
+    cuda_available=_CUDA_AVAILABLE,
+)
+
 
 # =========================================================
 # RERANKER
@@ -344,18 +378,26 @@ EMBEDDING_MODEL = (
 RERANKER_MODEL = (
     "BAAI/bge-reranker-v2-m3"
 )
+RERANKER_DEVICE = configured_model_device(
+    "RERANKER_DEVICE",
+    "cuda" if _CUDA_AVAILABLE else "cpu",
+    cuda_available=_CUDA_AVAILABLE,
+)
 
 # Điểm BGE-M3 tối thiểu để được xét
 RAG_SCORE_THRESHOLD = 0.45
 
 # Số document lấy từ Qdrant trước khi rerank
 MAX_LOCAL_RESULTS = 10
+MAX_MULTI_EVIDENCE_LOCAL_RESULTS = 20
+MAX_STRUCTURED_LOCAL_RESULTS = 50
 
 # Chỉ giữ document có điểm reranker đủ cao
 RERANK_SCORE_THRESHOLD = 0.50
 
 # Số document tối đa đưa cho Qwen
 MAX_RERANK_RESULTS = 3
+MAX_MULTI_EVIDENCE_RERANK_RESULTS = 6
 
 # Khoảng cách điểm cho phép giữa kết quả đầu và các kết quả sau.
 # Nếu kết quả đầu vượt kết quả thứ hai quá margin này, chỉ giữ kết quả đầu.
@@ -410,12 +452,26 @@ def load_local_procedure_index():
         print("LOCAL PROCEDURE INDEX ERROR:", exc)
     return LOCAL_PROCEDURE_INDEX
 
-def find_exact_local_procedures(question: str):
+def find_exact_local_procedures(question: str, domain_id: str = "legal_ai"):
     question_normalized = normalize_vietnamese(question)
     if not question_normalized:
         return []
     matches = []
-    for item in load_local_procedure_index():
+    if SEARCH_BACKEND == "elasticsearch":
+        exact_source_items = [
+            {"id": hit.id, "procedure_name": (
+                hit.payload.get("thu_tuc") or hit.payload.get("procedure_name") or ""
+            ), "payload": hit.payload}
+            for hit in search_store.search(
+                question,
+                domain_id,
+                limit=100,
+                min_score=ELASTICSEARCH_MIN_SCORE,
+            )
+        ]
+    else:
+        exact_source_items = load_local_procedure_index()
+    for item in exact_source_items:
         name = item["procedure_name"]
         normalized = normalize_vietnamese(name)
         without_prefix = re.sub(r"^thu tuc\s+", "", normalized).strip()
@@ -436,47 +492,102 @@ def find_exact_local_procedures(question: str):
 # =========================================================
 
 print(
-    "Loading BGE-M3 embedding model..."
+    "Loading BGE-M3 embedding model..." if SEARCH_BACKEND == "qdrant"
+    else "Skipping BGE-M3 embedding model for Elasticsearch BM25 retrieval...",
+    flush=True,
 )
-
-embedding_model = SentenceTransformer(
-    EMBEDDING_MODEL,
-    device="cuda"
-)
-
-embedding_model.max_seq_length = 1024
-
-print(
-    "BGE-M3 embedding model loaded."
-)
-
-print(
-    "Embedding dimension:",
-    embedding_model.get_sentence_embedding_dimension()
-)
+_embedding_init_started = time.perf_counter()
+if SEARCH_BACKEND == "qdrant":
+    try:
+        embedding_model = SentenceTransformer(
+            EMBEDDING_MODEL,
+            device=EMBEDDING_DEVICE,
+        )
+        embedding_model.max_seq_length = 1024
+        _embedding_dimension = embedding_model.get_sentence_embedding_dimension()
+    except Exception as exc:
+        print(
+            "[MODEL INIT]",
+            "model_name=", EMBEDDING_MODEL,
+            "selected_device=", EMBEDDING_DEVICE,
+            "status=failed",
+            "duration_ms=", round((time.perf_counter() - _embedding_init_started) * 1000, 2),
+            "exception_type=", type(exc).__name__,
+            flush=True,
+        )
+        raise RuntimeError(f"Failed to initialize {EMBEDDING_MODEL} on {EMBEDDING_DEVICE}") from exc
+    _embedding_memory = pytorch_cuda_memory_snapshot(torch)
+    print(
+        "[MODEL INIT]",
+        "model_name=", EMBEDDING_MODEL,
+        "selected_device=", str(getattr(embedding_model, "device", "unknown")),
+        "embedding_dimension=", _embedding_dimension,
+        "status=loaded",
+        "duration_ms=", round((time.perf_counter() - _embedding_init_started) * 1000, 2),
+        "cuda_allocated_bytes=", _embedding_memory["allocated_bytes"],
+        "cuda_reserved_bytes=", _embedding_memory["reserved_bytes"],
+        "cuda_memory_scope=pytorch_process_allocator",
+        flush=True,
+    )
+else:
+    embedding_model = None
+    _embedding_dimension = None
+    print(
+        "[MODEL INIT]",
+        "model_name=", EMBEDDING_MODEL,
+        "selected_device=", EMBEDDING_DEVICE,
+        "status=skipped",
+        "reason=elasticsearch_uses_bm25",
+        flush=True,
+    )
 
 
 # =========================================================
 # BGE RERANKER
 # =========================================================
 
+print("Loading BGE Reranker...", flush=True)
+_reranker_init_started = time.perf_counter()
+try:
+    reranker = FlagReranker(
+        RERANKER_MODEL,
+        use_fp16=True,
+        devices=RERANKER_DEVICE,
+    )
+    # FlagReranker normally moves the loaded model on first scoring call.
+    # Place it during startup so the configured device is explicit and logged.
+    reranker.model.to(RERANKER_DEVICE)
+except Exception as exc:
+    print(
+        "[MODEL INIT]",
+        "model_name=", RERANKER_MODEL,
+        "selected_device=", RERANKER_DEVICE,
+        "status=failed",
+        "duration_ms=", round((time.perf_counter() - _reranker_init_started) * 1000, 2),
+        "exception_type=", type(exc).__name__,
+        flush=True,
+    )
+    raise RuntimeError(f"Failed to initialize {RERANKER_MODEL} on {RERANKER_DEVICE}") from exc
+_reranker_actual_device = str(next(reranker.model.parameters()).device)
+_reranker_memory = pytorch_cuda_memory_snapshot(torch)
 print(
-    "Loading BGE Reranker..."
-)
-
-reranker = FlagReranker(
-    RERANKER_MODEL,
-    use_fp16=True
-)
-
-print(
-    "BGE Reranker loaded."
+    "[MODEL INIT]",
+    "model_name=", RERANKER_MODEL,
+    "selected_device=", RERANKER_DEVICE,
+    "actual_device=", _reranker_actual_device,
+    "status=loaded",
+    "duration_ms=", round((time.perf_counter() - _reranker_init_started) * 1000, 2),
+    "cuda_allocated_bytes=", _reranker_memory["allocated_bytes"],
+    "cuda_reserved_bytes=", _reranker_memory["reserved_bytes"],
+    "cuda_memory_scope=pytorch_process_allocator",
+    flush=True,
 )
 
 domain_document_service = DomainDocumentService(
     qdrant=qdrant_client,
-    embedder=embedding_model,
+    embedder=embedding_model if SEARCH_BACKEND == "qdrant" else None,
     registry=registry_service,
+    search_store=search_store,
 )
 
 
@@ -492,10 +603,10 @@ async def root():
         "message": "DAI Legal Core API đang chạy",
         "architecture": (
             "Frontend -> Core API -> "
-            "BGE-M3 -> Qdrant Top-K -> "
-            "BGE Reranker -> Local RAG -> "
+            f"{SEARCH_BACKEND} retrieval -> BGE Reranker -> Local RAG -> "
             "Permission -> MCP -> Qwen"
         ),
+        "search_backend": SEARCH_BACKEND,
         "mcp_server": MCP_SERVER_PATH,
         "model_api": MODEL_API_URL,
         "qdrant": QDRANT_URL,
@@ -503,6 +614,36 @@ async def root():
         "embedding_model": EMBEDDING_MODEL,
         "reranker_model": RERANKER_MODEL
     }
+
+
+@app.get("/api/v2/search/readiness")
+async def search_readiness():
+    """Read-only probe for configured search and primary PostgreSQL storage."""
+    def probe():
+        if SEARCH_BACKEND == "elasticsearch":
+            components = search_store.health()
+            postgres_status = components["postgres"]
+            retrieval_status = components["elasticsearch"]
+        else:
+            try:
+                with catalog_engine.connect() as connection:
+                    connection.exec_driver_sql("SELECT 1")
+                postgres_status = "available"
+            except Exception:
+                postgres_status = "unavailable"
+            try:
+                qdrant_client.get_collections()
+                retrieval_status = "available"
+            except Exception:
+                retrieval_status = "unavailable"
+            components = {"qdrant": retrieval_status}
+        components["postgres"] = postgres_status
+        return {
+            "configured_backend": SEARCH_BACKEND,
+            "components": components,
+            "ready": retrieval_status == "available" and postgres_status == "available",
+        }
+    return await asyncio.to_thread(probe)
 
 
 # =========================================================
@@ -713,6 +854,8 @@ async def rerank_local_results(
     contexts: list[dict],
     request_id: str = "unknown",
     stage_state: dict | None = None,
+    max_results: int = MAX_RERANK_RESULTS,
+    apply_margin: bool = True,
 ):
 
     if not contexts:
@@ -730,23 +873,12 @@ async def rerank_local_results(
 
 
 
-    pairs = []
+    pairs = [
+        [question, build_reranker_document_text(item)]
+        for item in contexts
+    ]
 
-    for item in contexts:
-
-        document_text = (
-            f"Tên thủ tục: "
-            f"{item['procedure_name']}\n"
-            f"{item['text']}"
-        )
-
-        pairs.append(
-            [
-                question,
-                document_text
-            ]
-        )
-
+    rerank_inference_started_at = time.perf_counter()
     try:
 
         # -------------------------------------------------
@@ -758,6 +890,9 @@ async def rerank_local_results(
             pairs,
             normalize=True
         )
+        reranker_inference_ms = round(
+            (time.perf_counter() - rerank_inference_started_at) * 1000, 2
+        )
 
         # Trường hợp chỉ có 1 document
         if isinstance(
@@ -767,90 +902,35 @@ async def rerank_local_results(
             scores = [float(scores)]
 
         # -------------------------------------------------
-        # ATTACH SCORE
-        # -------------------------------------------------
-
-        reranked = []
-
-        for item, score in zip(
-            contexts,
-            scores
-        ):
-
-            item_copy = dict(item)
-
-            item_copy[
-                "rerank_score"
-            ] = float(score)
-
-            reranked.append(
-                item_copy
+        if len(scores) != len(contexts):
+            raise RuntimeError(
+                f"Reranker returned {len(scores)} scores for {len(contexts)} candidates"
             )
-
-        # -------------------------------------------------
-        # SORT BY RERANK SCORE
-        # -------------------------------------------------
-
-        reranked.sort(
-            key=lambda x:
-                x["rerank_score"],
-            reverse=True
+        decisions = score_and_select_candidates(
+            contexts,
+            [float(score) for score in scores],
+            threshold=RERANK_SCORE_THRESHOLD,
+            max_results=max_results,
+            apply_margin=apply_margin,
+            margin_threshold=RERANK_MARGIN_THRESHOLD,
         )
-
-        # -------------------------------------------------
-        # FILTER
-        # -------------------------------------------------
-
-        filtered = [
-            item
-            for item in reranked
-            if item["rerank_score"]
-            >= RERANK_SCORE_THRESHOLD
-        ]
-
-        # -------------------------------------------------
-        # ADAPTIVE MARGIN FILTER
-        # -------------------------------------------------
-        # Nếu kết quả #1 vượt kết quả #2 quá xa, chỉ giữ #1.
-        # Nếu điểm các kết quả gần nhau, vẫn cho phép giữ nhiều
-        # document để Qwen có đủ context.
-
-        if filtered:
-
-            top_score = filtered[0]["rerank_score"]
-
-            adaptive_filtered = [
-                filtered[0]
-            ]
-
-            for item in filtered[1:]:
-
-                score_gap = (
-                    top_score
-                    - item["rerank_score"]
-                )
-
-                if score_gap <= RERANK_MARGIN_THRESHOLD:
-
-                    adaptive_filtered.append(
-                        item
-                    )
-
-                    print("[RERANK FILTER]", "request_id=", request_id, "decision=keep_by_margin", "score_gap=", round(score_gap, 4))
-
-                else:
-
-                    print("[RERANK FILTER]", "request_id=", request_id, "decision=reject_by_margin", "score_gap=", round(score_gap, 4))
-
-            filtered = adaptive_filtered[:MAX_RERANK_RESULTS]
-
-        # -------------------------------------------------
-        # TOP N
-        # -------------------------------------------------
-
-        filtered = filtered[
-            :MAX_RERANK_RESULTS
-        ]
+        filtered = []
+        for candidate in decisions:
+            print(
+                format_reranker_diagnostic(
+                    candidate["item"],
+                    rank=candidate["rank"],
+                    score=candidate["score"],
+                    threshold=RERANK_SCORE_THRESHOLD,
+                    selected=candidate["selected"],
+                    rejection_reason=candidate["rejection_reason"],
+                ),
+                "request_id=", request_id,
+            )
+            if candidate["selected"]:
+                item_copy = dict(candidate["item"])
+                item_copy["rerank_score"] = candidate["score"]
+                filtered.append(item_copy)
 
         print(
             "[PIPELINE STAGE]",
@@ -859,6 +939,21 @@ async def rerank_local_results(
             "status=completed",
             "selected_count=", len(filtered),
             "top_score=", round(filtered[0]["rerank_score"], 4) if filtered else None,
+            "threshold=", RERANK_SCORE_THRESHOLD,
+        )
+        _reranker_memory = pytorch_cuda_memory_snapshot(torch)
+        print(
+            "[MODEL INFERENCE]",
+            "model_name=", RERANKER_MODEL,
+            "selected_device=", RERANKER_DEVICE,
+            "status=completed",
+            "candidate_count=", len(pairs),
+            "duration_ms=", reranker_inference_ms,
+            "cuda_allocated_bytes=", _reranker_memory["allocated_bytes"],
+            "cuda_reserved_bytes=", _reranker_memory["reserved_bytes"],
+            "cuda_memory_scope=pytorch_process_allocator",
+            "request_id=", request_id,
+            flush=True,
         )
 
         if stage_state is not None:
@@ -882,7 +977,8 @@ async def rerank_local_results(
 
         # Nếu reranker lỗi thì không làm
         # toàn bộ Local RAG chết.
-        return contexts
+        # Fail closed: candidates without a successful rerank score are not eligible Evidence.
+        return []
 
 
 # =========================================================
@@ -916,19 +1012,40 @@ async def search_local_rag(
     retrieval_question = expand_synonyms_for_retrieval(question)
 
     try:
+        domain_config = registry_service.get_domain_config(domain_id)
+        retrieval_config = domain_config.retrieval
+        semantic_search_enabled = retrieval_config.retrieval_strategy in {"semantic", "hybrid"}
 
         # -------------------------------------------------
         # BGE-M3 QUERY EMBEDDING
         # -------------------------------------------------
 
         embedding_started_at = time.perf_counter()
-        query_vector = (
-            await asyncio.to_thread(
+        query_vector = None
+        if semantic_search_enabled and SEARCH_BACKEND == "qdrant":
+            embedding_inference_started_at = time.perf_counter()
+            query_vector = await asyncio.to_thread(
                 embedding_model.encode,
                 retrieval_question,
-                normalize_embeddings=True
+                normalize_embeddings=True,
             )
-        )
+            embedding_inference_ms = round(
+                (time.perf_counter() - embedding_inference_started_at) * 1000, 2
+            )
+            _embedding_memory = pytorch_cuda_memory_snapshot(torch)
+            print(
+                "[MODEL INFERENCE]",
+                "model_name=", EMBEDDING_MODEL,
+                "selected_device=", EMBEDDING_DEVICE,
+                "status=completed",
+                "input_count=1",
+                "duration_ms=", embedding_inference_ms,
+                "cuda_allocated_bytes=", _embedding_memory["allocated_bytes"],
+                "cuda_reserved_bytes=", _embedding_memory["reserved_bytes"],
+                "cuda_memory_scope=pytorch_process_allocator",
+                "request_id=", request_id,
+                flush=True,
+            )
         stage_durations_ms["embedding"] = round(
             (time.perf_counter() - embedding_started_at) * 1000, 2
         )
@@ -937,14 +1054,38 @@ async def search_local_rag(
         # QDRANT TOP-K
         # -------------------------------------------------
 
-        domain_config = registry_service.get_domain_config(domain_id)
-        retrieval_collections = retrieval_collections_for_domain(
-            domain_id,
-            qdrant_client.collection_exists,
-            registry_service,
+        retrieval_collections = (
+            [search_store.elasticsearch.index_name]
+            if SEARCH_BACKEND == "elasticsearch"
+            else retrieval_collections_for_domain(
+                domain_id,
+                qdrant_client.collection_exists,
+                registry_service,
+            )
         )
         configured_collection = domain_config.knowledge_collection
-        if configured_collection and configured_collection not in retrieval_collections:
+        structured_strategy = retrieval_config.structured_lookup_strategy
+        structured_handler = get_structured_retrieval_strategy(structured_strategy)
+        structured_query = bool(
+            structured_handler and structured_handler.is_structured_query(question)
+        )
+        structured_list_query = bool(
+            structured_handler
+            and retrieval_config.ranking_strategy == "structured_then_rerank"
+            and structured_handler.is_list_query(question)
+        )
+        retrieval_plan = retrieval_breadth(
+            question,
+            standard_local_limit=MAX_LOCAL_RESULTS,
+            standard_rerank_limit=MAX_RERANK_RESULTS,
+            multi_local_limit=MAX_MULTI_EVIDENCE_LOCAL_RESULTS,
+            multi_rerank_limit=MAX_MULTI_EVIDENCE_RERANK_RESULTS,
+        )
+        if (
+            SEARCH_BACKEND == "qdrant"
+            and configured_collection
+            and configured_collection not in retrieval_collections
+        ):
             retrieval_collection_status = (
                 "partial" if retrieval_collections else "base_collection_missing"
             )
@@ -959,19 +1100,86 @@ async def search_local_rag(
                 "available" if retrieval_collections else "no_domain_documents"
             )
 
-        qdrant_started_at = time.perf_counter()
+        retrieval_backend_started_at = time.perf_counter()
         results = []
-        for collection_name in retrieval_collections:
-            response = await asyncio.to_thread(
-                qdrant_client.query_points,
-                collection_name=collection_name,
-                query=query_vector.tolist(),
-                limit=MAX_LOCAL_RESULTS,
-                with_payload=True,
+        if semantic_search_enabled and SEARCH_BACKEND == "elasticsearch":
+            search_limit = (
+                min(MAX_STRUCTURED_LOCAL_RESULTS, retrieval_config.structured_candidate_limit)
+                if structured_query
+                else retrieval_plan.local_candidate_limit
             )
-            results.extend(response.points)
-        stage_durations_ms["qdrant"] = round(
-            (time.perf_counter() - qdrant_started_at) * 1000, 2
+            search_hits = await asyncio.to_thread(
+                search_store.search,
+                retrieval_question,
+                domain_id,
+                limit=search_limit,
+                min_score=ELASTICSEARCH_MIN_SCORE,
+            )
+            results = [
+                SimpleNamespace(id=hit.id, score=hit.score, payload=hit.payload)
+                for hit in search_hits
+            ]
+            retrieval_collection_status = "available"
+        elif semantic_search_enabled:
+            for collection_name in retrieval_collections:
+                response = await asyncio.to_thread(
+                    qdrant_client.query_points,
+                    collection_name=collection_name,
+                    query=query_vector.tolist(),
+                    limit=(
+                        min(MAX_STRUCTURED_LOCAL_RESULTS, retrieval_config.structured_candidate_limit)
+                        if structured_query
+                        else retrieval_plan.local_candidate_limit
+                    ),
+                    with_payload=True,
+                )
+                results.extend(response.points)
+        else:
+            retrieval_collection_status = "retrieval_disabled_by_domain_policy"
+        structured_points = []
+        structured_status = "not_required"
+        if structured_query:
+            structured_status = "no_domain_documents"
+        structured_collection = next(
+            (name for name in retrieval_collections if name.startswith("domain_documents_")),
+            None,
+        )
+        if structured_query and SEARCH_BACKEND == "elasticsearch" and results:
+            structured_points = results
+            structured_status = "completed"
+        elif structured_query and structured_collection:
+            structured_status = "completed"
+            try:
+                structured_filter = models.Filter(must=[
+                    models.FieldCondition(
+                        key="domain_id",
+                        match=models.MatchValue(value=domain_id),
+                    ),
+                    models.FieldCondition(
+                        key="source_type",
+                        match=models.MatchValue(value="domain_upload"),
+                    ),
+                ])
+                scroll_result = await asyncio.to_thread(
+                    qdrant_client.scroll,
+                    collection_name=structured_collection,
+                    scroll_filter=structured_filter,
+                    limit=retrieval_config.structured_candidate_limit,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                structured_points = scroll_result[0]
+            except Exception as structured_exc:
+                structured_status = "unavailable"
+                print(
+                    "[PIPELINE STAGE]",
+                    "request_id=", request_id,
+                    "stage=structured_retrieval",
+                    "status=failed",
+                    "exception_type=", type(structured_exc).__name__,
+                )
+        stage_durations_ms["retrieval_backend"] = round(
+            (time.perf_counter() - retrieval_backend_started_at) * 1000, 2
         )
 
         contexts = []
@@ -981,7 +1189,9 @@ async def search_local_rag(
         # LOCAL PROCEDURE EXACT LOOKUP
         # -------------------------------------------------
         exact_local_items = (
-            await asyncio.to_thread(find_exact_local_procedures, retrieval_question)
+            await asyncio.to_thread(
+                find_exact_local_procedures, retrieval_question, domain_id
+            )
             if domain_config.catalog_enabled
             else []
         )
@@ -1035,6 +1245,15 @@ async def search_local_rag(
                 or {}
             )
 
+            if not domain_upload_payload_matches(payload, domain_id):
+                print(
+                    "[RETRIEVAL FILTER]",
+                    "request_id=", request_id,
+                    "status=rejected",
+                    "reason=DOMAIN_UPLOAD_METADATA_MISMATCH",
+                )
+                continue
+
             procedure_name = str(
                 payload.get(
                     "thu_tuc",
@@ -1075,8 +1294,8 @@ async def search_local_rag(
                 continue
 
             if (
-                score
-                < RAG_SCORE_THRESHOLD
+                SEARCH_BACKEND == "qdrant"
+                and score < RAG_SCORE_THRESHOLD
             ):
                 exact_names = {
                     item.get("procedure_name", "")
@@ -1124,6 +1343,12 @@ async def search_local_rag(
 
             contexts.append(
                 {
+                    "point_id": candidate_id,
+                    "record_id": payload.get("record_id") or (
+                        payload.get("record_fields", {}).get("record_id")
+                        if isinstance(payload.get("record_fields"), dict)
+                        else None
+                    ),
                     "procedure_name": procedure_name,
                     "text": text,
                     "score": score,
@@ -1143,10 +1368,53 @@ async def search_local_rag(
                     "source_type": source_type or None,
                     "domain_id": payload.get("domain_id"),
                     "source_id": payload.get("source_id"),
+                    "document_id": payload.get("document_id"),
                     "evidence_id": payload.get("evidence_id"),
+                    "chunk_index": payload.get("chunk_index"),
                     "title": payload.get("title"),
                     "location": payload.get("location"),
+                    "record_name": payload.get("record_name"),
+                    "record_id": payload.get("record_id") or (
+                        payload.get("record_fields", {}).get("record_id")
+                        if isinstance(payload.get("record_fields"), dict)
+                        else None
+                    ),
+                    "record_fields": payload.get("record_fields"),
+                    "sheet_name": payload.get("sheet_name"),
+                    "row_number": payload.get("row_number"),
                 }
+            )
+
+        structured_candidates = (
+            structured_handler.select_records(question, structured_points)
+            if structured_handler and structured_status == "completed"
+            else []
+        )
+        existing_evidence_ids = {
+            str(item.get("evidence_id") or "") for item in contexts
+        }
+        retrieval_score_by_evidence = {
+            str((point.payload or {}).get("evidence_id") or ""): float(point.score or 0)
+            for point in results
+        }
+        structured_added_count = 0
+        for candidate in structured_candidates:
+            evidence_id = str(candidate.get("evidence_id") or "")
+            if not evidence_id or evidence_id in existing_evidence_ids:
+                continue
+            candidate["score"] = retrieval_score_by_evidence.get(evidence_id, 0.0)
+            candidate["structured_retrieval_match"] = True
+            contexts.append(candidate)
+            existing_evidence_ids.add(evidence_id)
+            structured_added_count += 1
+        if structured_status != "not_required":
+            print(
+                "[PIPELINE STAGE]",
+                "request_id=", request_id,
+                "stage=structured_retrieval",
+                "status=", structured_status,
+                "candidate_count=", len(structured_candidates),
+                "added_count=", structured_added_count,
             )
 
         # -------------------------------------------------
@@ -1233,7 +1501,10 @@ async def search_local_rag(
                     )
                 )
 
-        if exact_candidates:
+        if exact_candidates and should_use_exact_match_shortcut(
+            question,
+            structured_list_query=structured_list_query,
+        ):
 
             # Nếu có nhiều exact match, ưu tiên tên cụ thể/dài hơn.
             exact_candidates.sort(
@@ -1266,6 +1537,14 @@ async def search_local_rag(
                     contexts,
                     request_id=request_id,
                     stage_state=rerank_state,
+                    max_results=(
+                    retrieval_config.structured_list_limit
+                    if structured_list_query
+                    else retrieval_plan.rerank_result_limit
+                    ),
+                apply_margin=(
+                    not structured_list_query and retrieval_plan.apply_rerank_margin
+                ),
                 )
             )
             reranking_status = rerank_state.get("reranking", "unknown")
@@ -1307,9 +1586,10 @@ async def search_local_rag(
             }
             for evidence in catalog_evidences
         ]
-        enough_data, required_fields, missing_fields = check_enough_data(
+        enough_data, required_fields, missing_fields = check_domain_data_sufficiency(
             question,
             catalog_sufficiency_candidates + reranked_contexts,
+            catalog_enabled=domain_config.catalog_enabled,
         )
 
         mcp_evidences = []
@@ -1362,7 +1642,11 @@ async def search_local_rag(
             # không bị cắt mất khi MAX_CONTEXT_CHARS được áp dụng.
             context_parts = [
                 f"Tên thủ tục: {item['procedure_name']}",
-                f"Điểm BGE-M3: {item['score']:.4f}",
+                (
+                    f"Điểm Elasticsearch BM25: {item['score']:.4f}"
+                    if SEARCH_BACKEND == "elasticsearch"
+                    else f"Điểm BGE-M3: {item['score']:.4f}"
+                ),
                 f"Điểm Reranker: {item['rerank_score']:.4f}",
             ]
 
@@ -1401,7 +1685,7 @@ async def search_local_rag(
                 context
             )
 
-        retrieved_count = len(results)
+        retrieved_count = len(results) + structured_added_count
         reranked_count = len(reranked_contexts)
         evidence_count = len(evidence_bundle.evidences)
         retrieval_status = classify_retrieval_result(
@@ -1424,6 +1708,11 @@ async def search_local_rag(
             "reranked_count": reranked_count,
             "evidence_count": evidence_count,
             "retrieval_collection_status": retrieval_collection_status,
+            "structured_retrieval": structured_status,
+            "structured_candidate_count": len(structured_candidates),
+            # Keep the old diagnostic keys for clients that still read them.
+            "tourism_structured_retrieval": structured_status,
+            "tourism_structured_candidate_count": len(structured_candidates),
             "stage_durations_ms": stage_durations_ms,
             "stage_status": {
                 "retrieval": retrieval_status,
@@ -1737,6 +2026,11 @@ async def upload_domain_document(domain_id: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail="Unknown domain") from exc
     if not selected_domain_config.enabled:
         raise HTTPException(status_code=409, detail="Domain is disabled")
+    if not selected_domain_config.upload_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Document upload is not enabled for this domain",
+        )
 
     content = await file.read(2 * 1024 * 1024 + 1)
     filename = file.filename or ""
@@ -1749,15 +2043,22 @@ async def upload_domain_document(domain_id: str, file: UploadFile = File(...)):
             content,
         )
     except DomainDocumentError as exc:
+        print("[DOMAIN UPLOAD] DomainDocumentError:", repr(exc))
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         print(
             "[DOMAIN DOCUMENT UPLOAD]",
             "domain_id=", domain_id,
             "status=failed",
             "exception_type=", type(exc).__name__,
+            "detail=", repr(exc),
         )
-        raise HTTPException(status_code=503, detail="Domain document indexing failed") from exc
+        raise HTTPException(
+            status_code=503,
+            detail="Domain document indexing failed",
+        ) from exc
 
 
 @app.post(
@@ -1982,6 +2283,7 @@ async def chat_completions(
             "citation_attempts": 0,
             "raw_answer_debug_enabled": _raw_citation_debug_enabled,
             "evidence_count": 0,
+            "evidence_integrity_status": "not_evaluated",
             "evidence_ids": [],
             "cited_evidence_ids": [],
             "model_processing_time_ms": None,
@@ -2140,6 +2442,18 @@ async def chat_completions(
             )
             pipeline_state["retrieval_collection_status"] = rag_result.get(
                 "retrieval_collection_status", "unknown"
+            )
+            pipeline_state["structured_retrieval"] = rag_result.get(
+                "structured_retrieval", "not_required"
+            )
+            pipeline_state["structured_candidate_count"] = rag_result.get(
+                "structured_candidate_count", 0
+            )
+            pipeline_state["tourism_structured_retrieval"] = rag_result.get(
+                "tourism_structured_retrieval", "not_required"
+            )
+            pipeline_state["tourism_structured_candidate_count"] = rag_result.get(
+                "tourism_structured_candidate_count", 0
             )
             pipeline_state["stage_durations_ms"].update(
                 rag_result.get("stage_durations_ms", {})
@@ -2527,14 +2841,7 @@ async def chat_completions(
         # Keep source identity attached to the exact Evidence supplied to the
         # model. Omit content and internal retrieval metadata from the API.
         pipeline_state["evidence_sources"] = [
-            {
-                "evidence_id": item.evidence_id,
-                "source_type": item.source_type,
-                "source_id": item.source_id,
-                "title": item.title,
-                "source_url": item.source_url,
-                "location": item.location,
-            }
+            evidence_source_summary(item)
             for item in prompt_evidences
         ]
         print(
@@ -2708,13 +3015,22 @@ async def chat_completions(
             )
             if not generation_succeeded:
                 verification_status = "error"
+            elif not verification_result.evidence_integrity_passed:
+                verification_status = "failed"
             elif not verification_result.citation_integrity_passed:
                 verification_status = "failed"
             elif verification_result.confidence_status in ("failed", "invalid_score"):
                 verification_status = "failed"
+            elif verification_result.claim_grounding_status in (
+                "failed", "insufficient_evidence"
+            ):
+                verification_status = "failed"
             elif (
                 verification_result.confidence_status == "not_verified"
-                or verification_result.claim_grounding_status == "not_evaluated"
+                or verification_result.claim_grounding_status in (
+                    "not_evaluated", "inconclusive"
+                )
+                or verification_result.outcome == "evaluator_unavailable"
             ):
                 verification_status = "not_verified"
             else:
@@ -2731,6 +3047,10 @@ async def chat_completions(
             pipeline_state["citation_verification"] = (
                 "passed" if verification_result.citation_integrity_passed
                 else "failed" if generation_succeeded else "error"
+            )
+            pipeline_state["evidence_integrity_status"] = (
+                "passed" if verification_result.evidence_integrity_passed
+                else "failed" if generation_succeeded else "not_evaluated"
             )
             pipeline_state["confidence_status"] = verification_result.confidence_status
             pipeline_state["confidence_score"] = verification_result.confidence_score
@@ -2833,7 +3153,9 @@ async def chat_completions(
             elif verification_status == "failed":
                 pipeline_state["failure_stage"] = "verifier"
                 pipeline_state["failure_reason_code"] = (
-                    outcome.failure_reason_code
+                    "EVIDENCE_INTEGRITY_NOT_PASSED"
+                    if not verification_result.evidence_integrity_passed
+                    else outcome.failure_reason_code
                     if not verification_result.citation_integrity_passed
                     else "VERIFICATION_CONFIDENCE_NOT_PASSED"
                     if verification_result.confidence_status in ("failed", "invalid_score")

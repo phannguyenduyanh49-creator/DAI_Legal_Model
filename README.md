@@ -540,6 +540,31 @@ Datasets, vector indexes, model weights, and LoRA adapters may be large or subje
 
 This repository is intended for academic and research use only.
 
+## PostgreSQL document store and Elasticsearch retrieval (staged cutover)
+
+The search-store implementation keeps PostgreSQL as the source of truth and uses a transactional outbox to synchronize document chunks into Elasticsearch. Existing Qdrant collections remain untouched. The Core API continues to use Qdrant by default until the existing collections have been reviewed, migrated, and an Elasticsearch `min_score` has been calibrated on labeled queries.
+
+Local development services can be prepared with:
+
+```powershell
+docker compose -f backend/docker-compose.yml up -d postgres elasticsearch
+```
+
+Configure `SEARCH_DATABASE_URL` (or an explicit `CATALOG_DATABASE_URL`) for PostgreSQL and `ELASTICSEARCH_URL` (default `http://127.0.0.1:9200`) before running the API. Search storage requires an explicitly configured PostgreSQL URL and does not inherit the Catalog module's legacy default. Elasticsearch has security disabled only in this Compose development setup and is bound to localhost; use an authenticated, secured deployment outside local development. Optional `ELASTICSEARCH_API_KEY` or `ELASTICSEARCH_USERNAME` / `ELASTICSEARCH_PASSWORD` credentials are read from the environment and are never logged.
+
+Schema changes and indexing are explicit operations; API startup does not run migrations:
+
+```powershell
+python -m backend.search.migrate                 # dry run
+python -m backend.search.migrate --apply         # create new search tables
+python -m backend.search.create_index            # create versioned mapping
+python -m backend.search.reindex_qdrant          # read-only inventory/dry run
+python -m backend.search.reindex_qdrant --apply  # copy validated payloads; does not alter Qdrant
+python -m backend.search.sync_outbox             # retry pending index events once
+```
+
+Review the dry-run domain counts and skipped/mismatched metadata before using `--apply`. The Elasticsearch path is selected only with `SEARCH_BACKEND=elasticsearch` and requires an explicitly calibrated, nonnegative `ELASTICSEARCH_MIN_SCORE`; otherwise startup fails closed. Do not use an arbitrary value. `GET /api/v2/search/readiness` probes the configured retrieval service and PostgreSQL. The search-store migration has a matching down script, but rollback is destructive to the new search tables and should only be used after an independent backup and explicit operator review.
+
 ## Domain-scoped document knowledge bases
 
-The Gateway lists registered domains at GET /api/v2/domains/. Select a domain in the chat controls, then upload UTF-8 .txt or .md files (up to 2 MiB) with POST /api/v2/domains/{domain_id}/documents before asking a question in that domain. Uploaded chunks are stored in `domain_documents_{domain_id}` and retrieval is restricted to that domain's configured collection. Tourism is a sample non-legal domain for isolated development fixtures; it does not fall back to legal catalog or legal vectors. Uploaded text has no fabricated public URL, so the UI identifies it by filename, document ID, and chunk location.
+The Gateway lists registered domains at GET /api/v2/domains/. Select a domain in the chat controls, then upload supported UTF-8 .txt, .md, or .xlsx files (up to 2 MiB) with POST /api/v2/domains/{domain_id}/documents before asking a question in that domain. With the default Qdrant backend, uploaded chunks are stored in `domain_documents_{domain_id}`; with the explicitly configured Elasticsearch backend, PostgreSQL is the source of truth and Elasticsearch is the retrieval index. Retrieval is domain-filtered in either mode. Tourism is a sample non-legal domain for isolated development fixtures; it does not fall back to legal catalog or legal vectors. Uploaded text has no fabricated public URL, so the UI identifies it by filename, document ID, and chunk location.

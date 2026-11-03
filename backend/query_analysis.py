@@ -56,7 +56,8 @@ class QueryAnalysisService:
 
     def expand_legal_terms(self, cleaned_query: str) -> List[str]:
         """Phân tích câu hỏi, bóc tách từ khóa và tra cứu từ điển đồng nghĩa chuyên sâu."""
-        words = cleaned_query.lower().split()
+        normalized_query = cleaned_query.casefold()
+        words = normalized_query.split()
         expanded = []
 
         for word in words:
@@ -65,9 +66,17 @@ class QueryAnalysisService:
                 continue
 
             expanded.append(clean_w)
-            for key, synonyms in self.legal_thesaurus.items():
-                if key in clean_w or clean_w in key:
-                    expanded.extend(synonyms)
+
+        # Expand only complete thesaurus phrases. Substring matching a query
+        # token against a legal phrase makes short words such as "an" match
+        # "doanh nghiệp", which can incorrectly override a non-legal domain hint.
+        for key, synonyms in self.legal_thesaurus.items():
+            phrase = key.casefold().strip()
+            if phrase and re.search(
+                rf"(?<!\w){re.escape(phrase)}(?!\w)",
+                normalized_query,
+            ):
+                expanded.extend(synonyms)
 
         return list(dict.fromkeys(expanded))
 

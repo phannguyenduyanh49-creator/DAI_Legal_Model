@@ -1,0 +1,77 @@
+{
+  "dataset_snapshot_date": "2026-11-02",
+  "purpose": "Fixed candidate cases for answer-generation review; this file is not a gold benchmark.",
+  "review_status": "needs_human_review",
+  "requires_human_semantic_check": true,
+  "provenance_note": "Candidate records were identified in the existing local Qdrant collections during prior read-only inspection. Payloads and source authority must be rechecked before scoring. These cases are not independently reviewed and must not be used to claim legal, medical, or general answer accuracy.",
+  "cases": [
+    {
+      "case_id": "healthcare-hc-f-008",
+      "query": "Mô tả dịch vụ được ghi nhận cho Phòng khám mô phỏng Sản phụ khoa 08.",
+      "expected_domain": "healthcare",
+      "collection": "domain_documents_healthcare",
+      "expected_behavior": "Use only the matching record, preserve its mock status, and state that absent attributes such as hours or price are not provided.",
+      "evidence_candidates": [
+        {
+          "point_id": "034faed3-503f-451b-828a-f4eb1050959c",
+          "record_id": "HC-F-008",
+          "source_id": "Healthcare_Education_RAG_Datasets_100_each.xlsx",
+          "observed_payload_facts": [
+            "facility: Phòng khám mô phỏng Sản phụ khoa 08",
+            "services: Tư vấn sức khỏe phụ nữ; khám ban đầu; tư vấn; tái khám theo hẹn"
+          ],
+          "review_status": "unreviewed"
+        }
+      ]
+    },
+    {
+      "case_id": "shopping-realme-12-pro-plus",
+      "query": "Thông tin sản phẩm realme 12 Pro+ 5G 512GB trong dữ liệu mua sắm là gì?",
+      "expected_domain": "shopping",
+      "collection": "domain_documents_shopping",
+      "expected_behavior": "Use the retrieved product record and do not infer price, stock, or warranty when absent.",
+      "evidence_candidates": [
+        {
+          "point_id": "025d2336-9db8-4423-9e8d-86072cd8cce5",
+          "record_id": null,
+          "source_id": "Mua_Sam_Sai_Gon_100_San_Pham.xlsx",
+          "observed_payload_facts": ["product: 12 Pro+ 5G 512GB", "brand: realme"],
+          "review_status": "unreviewed"
+        }
+      ]
+    },
+    {
+      "case_id": "tourism-heritage-sites",
+      "query": "Tóm tắt thông tin có trong bản ghi Tourism về Heritage Sites of Vietnam.",
+      "expected_domain": "tourism",
+      "collection": "domain_documents_tourism",
+      "expected_behavior": "Answer only from the exact retrieved payload and preserve its source metadata; verify currentness before factual evaluation.",
+      "evidence_candidates": [
+        {
+          "point_id": "809b59ed-c84d-4bc1-b7b3-31168ac7710c",
+          "record_id": null,
+          "source_id": null,
+          "observed_payload_facts": ["The payload text contains the phrase Heritage Sites of Vietnam."],
+          "review_status": "unreviewed"
+        }
+      ]
+    },
+    {
+      "case_id": "education-cross-domain-isolation",
+      "query": "Tìm khóa Python nền tảng cho người mới bắt đầu trong domain education.",
+      "expected_domain": "education",
+      "collection": "domain_documents_education",
+      "expected_behavior": "Do not use or present the candidate below as Education Evidence: it was observed in the Healthcare collection with healthcare metadata. Report missing Education Evidence if no correctly scoped record is retrieved.",
+      "evidence_candidates": [
+        {
+          "point_id": "05aa7814-7b7e-4e04-8214-a653d3a181a2",
+          "record_id": "EDU-091",
+          "source_id": "Healthcare_Education_RAG_Datasets_100_each.xlsx",
+          "observed_payload_facts": ["title: Python nền tảng — nhóm 10", "level: beginner", "stored collection/domain: healthcare"],
+          "review_status": "unreviewed",
+          "usable_as_expected_domain_evidence": false
+        }
+      ]
+    }
+  ]
+}

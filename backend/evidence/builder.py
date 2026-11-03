@@ -79,8 +79,8 @@ class EvidenceBuilder:
 
         evidences = list(evidences)
 
-        # 1. Deduplicate
-        evidences = self._deduplicate(evidences)
+        # Reject missing IDs and conflicting copies before ordinary deduping.
+        evidences, integrity_issues = self._validate_and_deduplicate(evidences)
 
         # 2. Ranking
         evidences = self._rank(evidences)
@@ -109,6 +109,8 @@ class EvidenceBuilder:
             metadata={
                 "sources": detected_sources,
                 "deduplicated": True,
+                "integrity_issues": integrity_issues,
+                "integrity_excluded_count": len(integrity_issues),
                 "ranking": "source_score",
                 "min_score": self.min_score,
                 "max_evidences": self.max_evidences,
@@ -118,6 +120,97 @@ class EvidenceBuilder:
     # ============================================================
     # DEDUPLICATION
     # ============================================================
+
+    def _validate_and_deduplicate(
+        self,
+        evidences: list[Evidence],
+    ) -> tuple[list[Evidence], list[str]]:
+        """Drop missing IDs and copies with conflicting source provenance."""
+        by_id: dict[str, Evidence] = {}
+        conflicting_ids: set[str] = set()
+        issues: list[str] = []
+        for evidence in evidences:
+            evidence_id = str(evidence.evidence_id or "").strip()
+            if not evidence_id:
+                issues.append("EVIDENCE_ID_MISSING")
+                continue
+            if evidence_id in conflicting_ids:
+                continue
+            if evidence.source_type == "domain_upload":
+                metadata = evidence.metadata if isinstance(evidence.metadata, dict) else {}
+                domain_id = str(metadata.get("domain_id") or "").strip()
+                document_id = str(metadata.get("document_id") or "").strip()
+                source_id = str(evidence.source_id or "").strip()
+                if not domain_id or not document_id or not source_id:
+                    missing = [
+                        name for name, value in (
+                            ("domain_id", domain_id),
+                            ("document_id", document_id),
+                            ("source_id", source_id),
+                        ) if not value
+                    ]
+                    if evidence_id in by_id or evidence_id in conflicting_ids:
+                        by_id.pop(evidence_id, None)
+                        conflicting_ids.add(evidence_id)
+                        issues.append(f"EVIDENCE_ID_PROVENANCE_CONFLICT:{evidence_id}")
+                    else:
+                        # Keep the ID poisoned for this request so a later
+                        # duplicate cannot replace the invalid provenance.
+                        conflicting_ids.add(evidence_id)
+                        issues.append(
+                            "EVIDENCE_SOURCE_IDENTITY_MISSING:"
+                            + ",".join(missing)
+                        )
+                    continue
+                if (
+                    source_id != document_id
+                    or not evidence_id.startswith(
+                        f"domain:{domain_id}:{document_id}:"
+                    )
+                ):
+                    if evidence_id in by_id or evidence_id in conflicting_ids:
+                        by_id.pop(evidence_id, None)
+                        conflicting_ids.add(evidence_id)
+                        issues.append(f"EVIDENCE_ID_PROVENANCE_CONFLICT:{evidence_id}")
+                    else:
+                        conflicting_ids.add(evidence_id)
+                        issues.append(
+                            f"EVIDENCE_SOURCE_IDENTITY_CONFLICT:{evidence_id}"
+                        )
+                    continue
+            if evidence_id in conflicting_ids:
+                continue
+            prior = by_id.get(evidence_id)
+            if prior is None:
+                by_id[evidence_id] = evidence
+                continue
+            identity_fields = (
+                "source_type", "source_id", "source_url", "title", "location", "content"
+            )
+            identity_conflict = any(
+                getattr(prior, field_name) != getattr(evidence, field_name)
+                for field_name in identity_fields
+            )
+            prior_metadata = prior.metadata if isinstance(prior.metadata, dict) else {}
+            current_metadata = evidence.metadata if isinstance(evidence.metadata, dict) else {}
+            for field_name in (
+                "domain_id", "document_id", "record_id", "chunk_index",
+                "point_id", "sheet_name", "row_number",
+            ):
+                if (
+                    prior_metadata.get(field_name) is not None
+                    and current_metadata.get(field_name) is not None
+                    and prior_metadata[field_name] != current_metadata[field_name]
+                ):
+                    identity_conflict = True
+            if identity_conflict:
+                by_id.pop(evidence_id, None)
+                conflicting_ids.add(evidence_id)
+                issues.append(f"EVIDENCE_ID_PROVENANCE_CONFLICT:{evidence_id}")
+            elif (evidence.score or 0.0) > (prior.score or 0.0):
+                by_id[evidence_id] = evidence
+
+        return list(by_id.values()), issues
 
     def _deduplicate(
         self,

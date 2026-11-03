@@ -121,11 +121,34 @@ def test_fetch_uses_current_query_and_expected_dvc_search_contract():
         captured["payload"] = payload
         return {"code": "OK", "data": {"rows": [RELEVANT]}}
 
-    rows = fetch_dvc_rows("registered household business", post, "https://dvc/search")
+    rows = fetch_dvc_rows(
+        "registered household business", post, "https://dichvucong.gov.vn/search"
+    )
 
     assert rows == [RELEVANT]
     assert captured["payload"]["q"] == "registered household business"
     assert captured["payload"]["limit"] == 10
+
+
+@pytest.mark.parametrize("endpoint", [
+    "http://dichvucong.gov.vn/search",
+    "https://dichvucong.gov.vn.evil.example/search",
+    "https://dichvucong.gov.vn@evil.example/search",
+    "https://user@dichvucong.gov.vn/search",
+    "https://dichvucong.gov.vn:8443/search",
+    "not a URL",
+])
+def test_fetch_rejects_unapproved_endpoint_before_http_callback(endpoint):
+    called = False
+
+    def post(_endpoint, _payload):
+        nonlocal called
+        called = True
+        return {"code": "OK", "data": {"rows": []}}
+
+    with pytest.raises(DVCUpstreamError, match="allowlist"):
+        fetch_dvc_rows("keyword", post, endpoint)
+    assert called is False
 
 
 def test_detail_response_must_be_valid_and_match_selected_id():

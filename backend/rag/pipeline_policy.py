@@ -1,6 +1,24 @@
 from backend.rag.data_sufficiency import check_enough_data
 
 
+def check_domain_data_sufficiency(
+    question: str,
+    candidates: list[dict],
+    *,
+    catalog_enabled: bool,
+) -> tuple[bool, list[str], list[str]]:
+    """Use procedure-field requirements only for domains backed by the legal catalog."""
+    if catalog_enabled:
+        return check_enough_data(question, candidates)
+    has_source_text = any(
+        str(item.get("full_text", "") or item.get("text", "")).strip()
+        for item in candidates
+    )
+    if has_source_text:
+        return True, ["full_text"], []
+    return False, ["full_text"], ["full_text"]
+
+
 def build_catalog_fallback_after_retrieval_error(
     question: str,
     catalog_evidences: list,

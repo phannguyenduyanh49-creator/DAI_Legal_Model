@@ -2,6 +2,7 @@ from backend.evidence.schemas import Evidence
 from backend.evidence.builder import EvidenceBuilder
 from backend.rag.pipeline_policy import (
     build_catalog_fallback_after_retrieval_error,
+    check_domain_data_sufficiency,
     check_evidence_sufficiency,
     choose_data_source,
 )
@@ -95,3 +96,25 @@ def test_final_mcp_evidence_can_satisfy_generic_full_text_but_not_missing_struct
     assert enough is False
     assert required == ["profile_components"]
     assert missing == ["profile_components"]
+
+
+def test_non_catalog_domains_use_source_text_sufficiency_instead_of_legal_fields():
+    enough, required, missing = check_domain_data_sufficiency(
+        "Học phí của chương trình này là bao nhiêu?",
+        [{"text": "Tuition for the listed program is 12,500,000 VND."}],
+        catalog_enabled=False,
+    )
+    assert enough
+    assert required == ["full_text"]
+    assert missing == []
+
+
+def test_catalog_domains_keep_structured_legal_sufficiency_requirements():
+    enough, required, missing = check_domain_data_sufficiency(
+        "Hồ sơ đăng ký cần giấy tờ gì?",
+        [{"text": "Some text without profile components."}],
+        catalog_enabled=True,
+    )
+    assert not enough
+    assert "profile_components" in required
+    assert "profile_components" in missing
