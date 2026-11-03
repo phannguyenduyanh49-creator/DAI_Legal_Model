@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from backend.catalog.service import CatalogService
+from backend.catalog.database import init_db as init_catalog_db
+from sqlalchemy.exc import SQLAlchemyError
 from backend.catalog.query_parser import catalog_query_from_text
 from backend.domain_documents import (
     DomainDocumentError,
@@ -117,6 +119,21 @@ app = FastAPI(
     title="DAI Legal Core API"
 )
 
+@app.on_event("startup")
+def initialize_catalog_database():
+    """Create missing catalog tables without deleting existing data."""
+    try:
+        init_catalog_db()
+        print("[CATALOG DATABASE] status=initialized", flush=True)
+    except SQLAlchemyError as exc:
+        # Catalog is an optional source; the Core API can still start.
+        print(
+            "[CATALOG DATABASE]",
+            "status=unavailable",
+            "exception_type=", type(exc).__name__,
+            flush=True,
+        )
+
 # =========================================================
 # SESSION / COOKIE
 # =========================================================
@@ -133,7 +150,7 @@ SESSION_COOKIE_SECURE = False  # True khi deploy HTTPS production
 # PROJECT BASE DIRECTORY
 # =========================================================
 
-BASE_DIR = r"D:\Prj\DAI-Legal-Model"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # =========================================================
@@ -288,7 +305,14 @@ def get_or_create_session_id(request: Request) -> tuple[str, bool]:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Explicit origins are required when the browser sends cookies
+    # (the FE uses credentials: "include").
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://legal.donghai.uk",
+        "https://legal.donghai.uk",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -299,7 +323,7 @@ app.add_middleware(
 # CONFIG
 # =========================================================
 
-BASE_DIR = r"D:\Prj\DAI-Legal-Model"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 MCP_SERVER_PATH = os.path.join(
@@ -691,7 +715,19 @@ def is_relevant_procedure(
     procedure_name: str,
     score: float
 ) -> bool:
-    diagnostics = procedure_relevance(question, procedure_name)
+    # Do not let response-format instructions inflate the query-term count
+    # and cause a relevant procedure title to be rejected.
+    relevance_question = re.split(
+        r"\b(?:hãy trình bày|chỉ nêu thông tin|vui lòng trình bày|"
+        r"hãy liệt kê|liệt kê chi tiết)\b",
+        str(question or ""),
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+    if not relevance_question:
+        relevance_question = str(question or "").strip()
+
+    diagnostics = procedure_relevance(relevance_question, procedure_name)
     print(
         "[RETRIEVAL RELEVANCE]",
         "score=", round(score, 4),
@@ -700,6 +736,7 @@ def is_relevant_procedure(
         "query_terms=", diagnostics["query_term_count"],
         "query_coverage=", round(diagnostics["query_coverage"], 4),
         "title_precision=", round(diagnostics["title_precision"], 4),
+        "question_chars=", len(relevance_question),
     )
     return diagnostics["relevant"]
 
@@ -1584,6 +1621,15 @@ async def call_mcp_tool(
             timeout_seconds=timeout_seconds,
             base_environment=os.environ,
         )
+        print(
+            "[MCP CONFIG]",
+            "request_id=", request_id,
+            "server_path=", os.path.abspath(MCP_SERVER_PATH),
+            "server_exists=", os.path.isfile(MCP_SERVER_PATH),
+            "cwd=", os.path.abspath(BASE_DIR),
+            "python=", sys.executable,
+            flush=True,
+        )
 
         def log_tool_stage(stage: str, elapsed_ms: float) -> None:
             mcp_stage_timings[stage] = round(elapsed_ms, 2)
@@ -1613,7 +1659,10 @@ async def call_mcp_tool(
             "status=failed", "tool=", tool_name,
             "reason_code=", getattr(exc, "reason_code", "INVALID_CONFIGURATION"),
             "exception_type=", type(exc).__name__,
+            "exception_repr=", repr(exc),
+            "exception_message=", str(exc),
             "elapsed_ms=", elapsed_ms,
+            flush=True,
         )
         raise
 
@@ -1789,7 +1838,9 @@ async def chat_completions(
             ""
         )
     ).strip()
-    policy_domain = str(data.get("policy_domain", "") or "").strip().lower()
+    # Default chat requests to the legal domain so policy enforcement is not
+    # accidentally skipped when the frontend omits policy_domain.
+    policy_domain = str(data.get("policy_domain", "legal_ai") or "legal_ai").strip().lower()
     effective_domain = policy_domain or "legal_ai"
     try:
         selected_domain_config = registry_service.get_domain_config(effective_domain)
@@ -1806,7 +1857,18 @@ async def chat_completions(
     if selected_domain_config.catalog_enabled:
         catalog_query = catalog_query_from_text(question)
         catalog_started_at = time.perf_counter()
-        catalog_result, catalog_lookup_status = catalog_service.lookup_optional(catalog_query)
+        try:
+            catalog_result, catalog_lookup_status = catalog_service.lookup_optional(catalog_query)
+        except SQLAlchemyError as exc:
+            # A missing/unavailable catalog table must not turn chat into HTTP 500.
+            catalog_result = None
+            catalog_lookup_status = "unavailable"
+            print(
+                "[CATALOG LOOKUP]",
+                "request_id=", request_id,
+                "status=unavailable",
+                "exception_type=", type(exc).__name__,
+            )
         catalog_lookup_duration_ms = round((time.perf_counter() - catalog_started_at) * 1000, 2)
     if catalog_lookup_status == "unavailable":
         print(
@@ -1865,9 +1927,11 @@ async def chat_completions(
         raw_allow_external
     )
 
-    requested_mcp_tools = data.get("mcp_allowed_tools", [])
+    # Request the DVC lookup tool by default; policy_middleware still applies
+    # the legal_ai domain allowlist and can deny it if the domain policy forbids it.
+    requested_mcp_tools = data.get("mcp_allowed_tools", ["search_dichvucong"])
     if not isinstance(requested_mcp_tools, list):
-        requested_mcp_tools = []
+        requested_mcp_tools = ["search_dichvucong"]
     domain_prompt_template = None
     verification_threshold = None
     try:
@@ -2201,7 +2265,8 @@ async def chat_completions(
 
             print(
                 "\nLOCAL RAG + RERANKER "
-                "FOUND DATA"
+                "FOUND DATA" if has_local_evidence
+                else "\nLOCAL RAG SELECTED WITH NO EVIDENCE (CHECK POLICY)"
             )
 
             print(
@@ -2209,6 +2274,53 @@ async def chat_completions(
             )
 
             source_type = "local"
+
+        elif data_source == "blocked":
+            # No local evidence and external lookup is denied by policy.
+            # Do not label this as a successful local retrieval and do not
+            # enter the MCP branch.
+            print(
+                "\nNO LOCAL EVIDENCE; MCP BLOCKED BY POLICY"
+            )
+            pipeline_state["citation_verification"] = "not_required"
+            pipeline_state["external_fallback"] = "policy_denied"
+            pipeline_state["response_status"] = "no_evidence_policy_blocked"
+            pipeline_state["response_outcome"] = "insufficient_evidence"
+
+            blocked_message = (
+                "Mình chưa tìm thấy bằng chứng phù hợp trong dữ liệu pháp lý nội bộ. "
+                "Hiện chính sách hệ thống không cho phép tra cứu nguồn bên ngoài, "
+                "nên mình không thể xác minh câu trả lời cho câu hỏi này."
+            )
+            save_message(session_id, "assistant", blocked_message)
+
+            yield "event: status\n"
+            yield 'data: {"status":"no_evidence_policy_blocked"}\n\n'
+            yield "event: chunk\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {"delta": blocked_message, "session_id": session_id},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            yield "event: done\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "status": "no_evidence_policy_blocked",
+                        "outcome": "insufficient_evidence",
+                        "verifier": "not_required",
+                        "verifier_scope": "not_applicable",
+                        "pipeline": pipeline_state,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            return
 
         # =================================================
         # STEP 3
@@ -2377,6 +2489,9 @@ async def chat_completions(
                     "status=failed",
                     "reason_code=", mcp_failure_code,
                     "exception_type=", type(e).__name__,
+                    "exception_repr=", repr(e),
+                    "exception_message=", str(e),
+                    flush=True,
                 )
                 contexts = []
                 mcp_evidences = []
@@ -2919,6 +3034,18 @@ async def chat_completions(
                 "claims_with_evidence=", sum(
                     bool(claim.evidence_ids)
                     for claim in structured_answer.claims
+                ),
+                "reference_answer_reason_code=", reference_failure_reason,
+                "failure_stage=", pipeline_state.get("failure_stage"),
+                "failure_reason_code=", pipeline_state.get("failure_reason_code"),
+                "answer_data_sufficiency=", pipeline_state.get("answer_data_sufficiency"),
+                "answer_required_fields=", json.dumps(
+                    pipeline_state.get("answer_required_fields", []),
+                    ensure_ascii=False,
+                ),
+                "answer_missing_fields=", json.dumps(
+                    pipeline_state.get("answer_missing_fields", []),
+                    ensure_ascii=False,
                 ),
             )
 

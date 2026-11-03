@@ -6,11 +6,7 @@ from backend.answer.citation_contract import CITATION_RULES, format_allowed_evid
 
 
 class PromptAssembler:
-
-    def __init__(
-        self,
-        max_evidence_chars: int = 12000,
-    ):
+    def __init__(self, max_evidence_chars: int = 12000):
         self.max_evidence_chars = max_evidence_chars
 
     def build(
@@ -20,89 +16,81 @@ class PromptAssembler:
         system_instruction: Optional[str] = None,
         domain_prompt_template: Optional[str] = None,
     ) -> str:
-
+        """Build a grounded legal-answer prompt using only included evidence."""
         system_part = system_instruction or (
-            "Bạn là trợ lý AI tư vấn thủ tục hành chính. "
-            "Chỉ sử dụng thông tin trong Evidence để trả lời. "
-            "Không tự suy đoán thông tin không có trong Evidence."
+            "Bạn là trợ lý AI hỗ trợ tra cứu thủ tục hành chính và thông tin pháp lý tại Việt Nam.\n"
+            "Chỉ sử dụng dữ kiện được nêu trong phần Evidence bên dưới để trả lời. "
+            "Không bịa đặt hoặc tự bổ sung điều luật, nghị định, thời hạn, lệ phí, "
+            "thành phần hồ sơ, điều kiện hay cơ quan giải quyết.\n"
+            "Trước khi trả lời, xác định những phần của câu hỏi mà Evidence thực sự hỗ trợ. "
+            "Nếu câu hỏi yêu cầu quy trình, hãy trình bày theo thứ tự từng bước khi Evidence "
+            "có đủ căn cứ; nếu Evidence chỉ mô tả một phần quy trình, nêu rõ đó là phần "
+            "được nguồn cung cấp và không khẳng định là toàn bộ quy trình.\n"
+            "Tổng hợp các Evidence liên quan thay vì chỉ nhắc lại một câu trích riêng lẻ. "
+            "Không gộp các thủ tục hoặc loại hình pháp lý khác nhau nếu nguồn không xác nhận chúng giống nhau.\n"
+            "Mỗi nhận định thực tế hoặc pháp lý phải có trích dẫn Evidence ID chính xác. "
+            "Chỉ sử dụng các ID nằm trong danh sách Allowed Evidence IDs; không tự tạo hoặc sửa ID.\n"
+            "Nếu Evidence không đủ để trả lời một ý, hãy nói rõ thông tin đó chưa được nguồn cung cấp. "
+            "Không đoán và không trình bày suy luận như một sự thật đã được xác minh.\n"
+            "Trả lời bằng tiếng Việt rõ ràng, trực tiếp; ưu tiên danh sách đánh số khi câu hỏi hỏi về các bước.\n"
         )
 
-        included_evidences = self.included_evidences(evidence_bundle)
-        system_part += " " + CITATION_RULES
-        evidence_context = self._build_evidence_context(
-            evidence_bundle
+        included = self.included_evidences(evidence_bundle)
+        allowed_ids = format_allowed_evidence_ids(
+            item.evidence_id for item in included
         )
-
+        evidence_context = self._format_evidences(included)
+        # Render domain templates with the same placeholders used by the
+        # existing contract. A malformed template is ignored safely so it
+        # cannot leak raw placeholders into the model prompt.
         domain_prompt = ""
         if domain_prompt_template:
             try:
                 domain_prompt = domain_prompt_template.format(
+                    query=str(question).strip(),
                     context="the shared EVIDENCE section above",
-                    query=question,
-                )
-            except (KeyError, IndexError, ValueError):
-                # A malformed registry template must not break the answer pipeline.
+                ).strip()
+            except (KeyError, IndexError, ValueError, AttributeError):
                 domain_prompt = ""
 
-        prompt = (
-            f"{system_part}\n\n"
-            "=== USER QUESTION ===\n"
-            f"{question}\n\n"
-            "=== EVIDENCE ===\n"
-            f"{evidence_context}\n\n"
-            "=== INSTRUCTIONS ===\n"
-            "Chỉ sử dụng thông tin được cung cấp trong Evidence để trả lời.\n"
-            "Ưu tiên thông tin thuộc đúng thủ tục hành chính mà người dùng hỏi.\n"
-            "Trích xuất chính xác thành phần hồ sơ, thời gian giải quyết, "
-            "phí và lệ phí nếu Evidence có cung cấp.\n"
-            "Không tự thay đổi số liệu, đơn vị, thời hạn hoặc điều kiện "
-            "được ghi trong Evidence.\n"
-            "Phân biệt rõ lệ phí bằng 0, không thu phí và thông tin "
-            "về lệ phí chưa được cung cấp.\n"
-            "Không tự bổ sung giấy tờ, thời hạn hoặc mức phí từ kiến thức bên ngoài.\n"
-            "Nếu Evidence không có thông tin cần thiết, hãy nói rõ "
-            "'Evidence hiện có chưa cung cấp thông tin này'.\n"
-            "Nếu có nhiều Evidence, ưu tiên nguồn liên quan trực tiếp "
-            "đến thủ tục đang được hỏi.\n"
-            "Trình bày câu trả lời rõ ràng theo các mục phù hợp với câu hỏi.\n"
+        parts = [
+            system_part.strip(),
+            "=== USER QUESTION ===\n" + str(question).strip(),
+            "=== EVIDENCE ===\n" + evidence_context,
+        ]
+        if domain_prompt:
+            parts.append("=== DOMAIN-SPECIFIC INSTRUCTIONS ===\n" + domain_prompt)
+        parts.extend(
+            [
+                "=== REQUIRED CITATION FORMAT ===\n" + CITATION_RULES,
+                "Allowed Evidence IDs: " + allowed_ids,
+                (
+                    "=== RESPONSE CHECKLIST ===\n"
+                    "- Trả lời đúng trọng tâm câu hỏi.\n"
+                    "- Với câu hỏi về quy trình, liệt kê các bước theo thứ tự nếu Evidence hỗ trợ.\n"
+                    "- Gắn Evidence ID chính xác cho từng nhận định có căn cứ.\n"
+                    "- Nêu rõ phần nào chưa có đủ căn cứ; không tự điền thông tin còn thiếu.\n"
+                    "- Không tuyên bố câu trả lời đã được xác minh độc lập nếu hệ thống chưa thực hiện xác minh đó."
+                ),
+            ]
         )
-
-        allowed_ids = format_allowed_evidence_ids(
-            item.evidence_id for item in included_evidences
-        )
-        return (
-            prompt
-            + ("\n=== DOMAIN-SPECIFIC INSTRUCTIONS ===\n" + domain_prompt + "\n" if domain_prompt else "")
-            + "\n=== REQUIRED CITATION FORMAT ===\n"
-            + CITATION_RULES
-            + "\n"
-            + f"Allowed Evidence IDs: {allowed_ids}\n"
-        )
+        return "\n\n".join(parts)
 
     def included_evidences(self, evidence_bundle: EvidenceBundle):
         """Return exactly the evidence sections that fit in the assembled prompt."""
         selected = []
         total_chars = 0
-        # When an approved external lookup supplied official DVC evidence,
-        # give it prompt-budget priority over similarly ranked local snippets.
+        # Prioritize approved official MCP evidence, then preserve relative order.
         ordered_evidences = sorted(
             evidence_bundle.evidences,
             key=lambda evidence: evidence.source_type != "mcp",
         )
         for evidence in ordered_evidences:
-            section = (
-                f"[Evidence ID: {evidence.evidence_id}]\n"
-                f"Source: {evidence.source_type}\n"
-                f"Title: {evidence.title or ''}\n"
-                f"Score: {evidence.score}\n"
-                f"Content:\n{evidence.content}\n"
-            )
+            section = self._format_evidence(evidence)
             remaining = self.max_evidence_chars - total_chars
             if len(section) > remaining:
-                # The first relevant Evidence item can exceed the entire
-                # budget. Keep its citation identity and include a marked
-                # prefix instead of silently dropping all usable evidence.
-                if not selected:
+                # Keep a truncated first relevant item rather than dropping all evidence.
+                if not selected and remaining > 0:
                     header = (
                         f"[Evidence ID: {evidence.evidence_id}]\n"
                         f"Source: {evidence.source_type}\n"
@@ -110,14 +98,13 @@ class PromptAssembler:
                         f"Score: {evidence.score}\n"
                         "Content:\n"
                     )
-                    truncation_marker = "\n[Evidence content truncated to fit prompt budget.]"
-                    content_budget = max(0, remaining - len(header) - len(truncation_marker))
-                    if content_budget:
+                    marker = "\n[Evidence content truncated to fit prompt budget.]"
+                    content_budget = max(0, remaining - len(header) - len(marker))
+                    if content_budget > 0:
                         selected.append(
                             replace(
                                 evidence,
-                                content=evidence.content[:content_budget]
-                                + truncation_marker,
+                                content=evidence.content[:content_budget] + marker,
                             )
                         )
                 break
@@ -125,24 +112,21 @@ class PromptAssembler:
             total_chars += len(section)
         return selected
 
-    def _build_evidence_context(
-        self,
-        evidence_bundle: EvidenceBundle,
-    ) -> str:
+    @staticmethod
+    def _format_evidence(evidence) -> str:
+        return (
+            f"[Evidence ID: {evidence.evidence_id}]\n"
+            f"Source: {evidence.source_type}\n"
+            f"Title: {evidence.title or ''}\n"
+            f"Score: {evidence.score}\n"
+            f"Content:\n{evidence.content}\n"
+        )
 
-        if not evidence_bundle.evidences:
-            return "Không có Evidence phù hợp."
+    def _format_evidences(self, evidences) -> str:
+        if not evidences:
+            return "Không có Evidence phù hợp. Không được tự tạo câu trả lời pháp lý khi thiếu nguồn."
+        return "\n".join(self._format_evidence(item) for item in evidences)
 
-        sections = []
-        for evidence in self.included_evidences(evidence_bundle):
-            section = (
-                f"[Evidence ID: {evidence.evidence_id}]\n"
-                f"Source: {evidence.source_type}\n"
-                f"Title: {evidence.title or ''}\n"
-                f"Score: {evidence.score}\n"
-                f"Content:\n{evidence.content}\n"
-            )
-
-            sections.append(section)
-
-        return "\n".join(sections)
+    def _build_evidence_context(self, evidence_bundle: EvidenceBundle) -> str:
+        """Compatibility wrapper retained for existing callers/tests."""
+        return self._format_evidences(self.included_evidences(evidence_bundle))

@@ -136,31 +136,73 @@ def rank_local_index(dataset: Iterable[Any], query: str, limit: int = 5) -> list
 
 
 def extract_dvc_rows(response: Any) -> list[dict]:
-    if isinstance(response, list):
-        rows = response
-    elif isinstance(response, dict):
-        code = response.get("code")
-        if code and str(code).upper() not in {"OK", "200", "SUCCESS"}:
-            raise DVCUpstreamError("DVC search returned a non-success status")
-        data = response.get("data")
-        if isinstance(data, dict):
-            row_key = next((key for key in ("rows", "items", "content") if key in data), None)
-            if row_key is None:
-                raise DVCUpstreamError("DVC search response is missing result rows")
-            rows = data[row_key]
-        elif isinstance(data, list):
-            rows = data
-        else:
-            row_key = next((key for key in ("rows", "items") if key in response), None)
-            if row_key is None:
-                raise DVCUpstreamError("DVC search response has an invalid shape")
-            rows = response[row_key]
-    else:
-        raise DVCUpstreamError("DVC search response has an invalid type")
+    """Extract procedure rows from DVC responses with variable wrapper depth.
 
-    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-        raise DVCUpstreamError("DVC search result rows are malformed")
-    return rows
+    Prefer a non-empty result list anywhere in the response. Some DVC gateway
+    responses include placeholder arrays (for example ``items: []``) beside
+    the actual nested result; returning the first empty array masks real rows.
+    An empty list is returned only when no non-empty row list exists.
+    """
+    row_keys = (
+        "rows", "items", "content", "records", "list", "resultList",
+        "formalityList", "formalityRows", "results", "dataList",
+    )
+    wrapper_keys = ("data", "result", "payload", "response")
+    empty_list_found = False
+
+    def find_rows(value: Any, depth: int = 0) -> list[dict] | None:
+        nonlocal empty_list_found
+        if depth > 8:
+            return None
+        if isinstance(value, list):
+            if all(isinstance(item, dict) for item in value):
+                if value:
+                    return value
+                empty_list_found = True
+            return None
+        if not isinstance(value, dict):
+            return None
+
+        # First inspect named result containers, but do not let an empty
+        # placeholder hide a populated list nested deeper in the response.
+        for key in row_keys:
+            candidate = value.get(key)
+            if isinstance(candidate, list):
+                if candidate and all(isinstance(item, dict) for item in candidate):
+                    return candidate
+                if not candidate:
+                    empty_list_found = True
+
+        # Walk known wrappers first, then other nested objects/lists.
+        visited: set[int] = set()
+        for key in wrapper_keys:
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                visited.add(id(child))
+                found = find_rows(child, depth + 1)
+                if found is not None:
+                    return found
+        for child in value.values():
+            if isinstance(child, (dict, list)) and id(child) not in visited:
+                found = find_rows(child, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    if isinstance(response, dict):
+        code = response.get("code")
+        if code is not None and str(code).upper() not in {"OK", "200", "SUCCESS", "0"}:
+            message = response.get("message") or response.get("msg") or "unknown upstream error"
+            raise DVCUpstreamError(f"DVC search returned code={code}: {message}")
+
+    rows = find_rows(response)
+    if rows is not None:
+        return rows
+    if empty_list_found:
+        return []
+    raise DVCUpstreamError(
+        f"DVC search response has unsupported shape: {type(response).__name__}"
+    )
 
 
 def fetch_dvc_rows(query: str, post_json: Callable[[str, dict], Any], endpoint: str) -> list[dict]:
@@ -175,7 +217,10 @@ def fetch_dvc_rows(query: str, post_json: Callable[[str, dict], Any], endpoint: 
     try:
         response = post_json(endpoint, payload)
     except Exception as exc:
-        raise DVCUpstreamError("DVC search request failed") from exc
+        # Preserve the concrete transport/HTTP cause for MCP diagnostics.
+        raise DVCUpstreamError(
+            f"DVC search request failed: {type(exc).__name__}: {exc}"
+        ) from exc
     return extract_dvc_rows(response)
 
 
@@ -183,7 +228,7 @@ def validate_dvc_detail_response(response: Any, expected_id: str) -> None:
     if not isinstance(response, dict):
         raise DVCUpstreamError("DVC detail response has an invalid type")
     code = response.get("code")
-    if code and str(code).upper() not in {"OK", "200", "SUCCESS"}:
+    if code and str(code).upper() not in {"OK", "200", "SUCCESS", "0"}:
         raise DVCUpstreamError("DVC detail returned a non-success status")
     data = response.get("data")
     if not isinstance(data, (dict, list)) or not data:

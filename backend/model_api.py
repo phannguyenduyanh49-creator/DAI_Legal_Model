@@ -1,262 +1,538 @@
-from fastapi import FastAPI, Header
-from pydantic import BaseModel, Field
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from peft import PeftModel
-import torch
-import uvicorn
-import time
-import hashlib
-import sys
 import os
+import json
+import torch
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+)
+
+from peft import PeftModel
 
 
-def configure_utf8_stdio() -> None:
-    """Keep Windows console encoding from preventing API startup on Vietnamese logs."""
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if stream is None or not hasattr(stream, "reconfigure"):
-            continue
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, OSError, ValueError):
-            pass
-
-
-configure_utf8_stdio()
-
-# ============================================================
-# CONFIG
-# ============================================================
+# =========================================================
+# 1. CẤU HÌNH
+# =========================================================
 
 BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
-LORA_MODEL = r"D:\Prj\DAI-Legal-Model\outputs\qwen-legal-lora-v4"
-
-HOST = os.getenv("MODEL_API_HOST", "127.0.0.1")
-PORT = int(os.getenv("MODEL_API_PORT", "8001"))
 
 
-def _configured_generation_limit() -> int:
+# =========================================================
+# 2. TỰ NHẬN DIỆN MÔI TRƯỜNG
+# =========================================================
+
+if os.path.exists("/app"):
+    # Docker / Linux
+    PROJECT_DIR = "/app"
+
+    HF_HOME = "/root/.cache/huggingface"
+
+    HF_CACHE = "/root/.cache/huggingface/hub"
+
+else:
+    # Windows
+    PROJECT_DIR = os.path.dirname(
+        os.path.abspath(__file__)
+    )
+
+    HF_HOME = r"D:\AI\HuggingFace"
+
+    HF_CACHE = r"D:\AI\HuggingFace\hub"
+
+
+os.environ["HF_HOME"] = HF_HOME
+os.environ["HF_HUB_CACHE"] = HF_CACHE
+
+
+# =========================================================
+# 3. ĐƯỜNG DẪN LORA
+# =========================================================
+
+FALLBACK_LORA = os.path.join(
+    PROJECT_DIR,
+    "outputs",
+    "qwen-legal-lora-v3"
+)
+
+REGISTRY_FILE = os.path.join(
+    PROJECT_DIR,
+    "outputs",
+    "active",
+    "registry.json"
+)
+
+
+# =========================================================
+# 4. ACTIVE ADAPTER
+# =========================================================
+
+def get_active_adapter():
+
+    print("\n" + "=" * 60)
+    print("AUTO MODEL REGISTRY")
+    print("=" * 60)
+
+    print(
+        "Project:",
+        PROJECT_DIR
+    )
+
+    print(
+        "Registry:",
+        REGISTRY_FILE
+    )
+
+    print(
+        "Fallback:",
+        FALLBACK_LORA
+    )
+
+    # -----------------------------------------------------
+    # Registry không tồn tại
+    # -----------------------------------------------------
+
+    if not os.path.exists(REGISTRY_FILE):
+
+        print(
+            "Registry không tồn tại."
+        )
+
+        print(
+            "Fallback → V3"
+        )
+
+        return FALLBACK_LORA
+
+
+    # -----------------------------------------------------
+    # Đọc registry
+    # -----------------------------------------------------
+
     try:
-        value = int(os.getenv("MODEL_MAX_NEW_TOKENS", "256"))
-    except (TypeError, ValueError):
-        value = 256
-    return max(1, min(value, 512))
+
+        with open(
+            REGISTRY_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            registry = json.load(f)
+
+    except Exception as e:
+
+        print(
+            "Không đọc được registry:",
+            e
+        )
+
+        print(
+            "Fallback → V3"
+        )
+
+        return FALLBACK_LORA
 
 
-MODEL_MAX_NEW_TOKENS = _configured_generation_limit()
+    status = registry.get(
+        "status",
+        "unknown"
+    )
+
+    active_adapter = registry.get(
+        "active_adapter"
+    )
 
 
-# ============================================================
-# APP
-# ============================================================
+    print(
+        "Registry status:",
+        status
+    )
+
+    print(
+        "Registry adapter:",
+        active_adapter
+    )
+
+
+    # -----------------------------------------------------
+    # Không có adapter
+    # -----------------------------------------------------
+
+    if not active_adapter:
+
+        print(
+            "Registry không có active_adapter."
+        )
+
+        print(
+            "Fallback → V3"
+        )
+
+        return FALLBACK_LORA
+
+
+    # -----------------------------------------------------
+    # QUAN TRỌNG:
+    # Registry được tạo trên Windows có thể dùng "\"
+    #
+    # Docker Linux cần "/"
+    # -----------------------------------------------------
+
+    active_adapter = active_adapter.replace(
+        "\\",
+        "/"
+    )
+
+
+    # -----------------------------------------------------
+    # Relative path → absolute path
+    # -----------------------------------------------------
+
+    if not os.path.isabs(
+        active_adapter
+    ):
+
+        active_adapter = os.path.join(
+            PROJECT_DIR,
+            active_adapter
+        )
+
+
+    active_adapter = os.path.normpath(
+        active_adapter
+    )
+
+
+    # -----------------------------------------------------
+    # Kiểm tra adapter
+    # -----------------------------------------------------
+
+    adapter_file = os.path.join(
+        active_adapter,
+        "adapter_model.safetensors"
+    )
+
+    config_file = os.path.join(
+        active_adapter,
+        "adapter_config.json"
+    )
+
+
+    if not os.path.exists(
+        adapter_file
+    ):
+
+        print(
+            "Active adapter không tồn tại:"
+        )
+
+        print(
+            active_adapter
+        )
+
+        print(
+            "Fallback → V3"
+        )
+
+        return FALLBACK_LORA
+
+
+    if not os.path.exists(
+        config_file
+    ):
+
+        print(
+            "adapter_config.json không tồn tại:"
+        )
+
+        print(
+            active_adapter
+        )
+
+        print(
+            "Fallback → V3"
+        )
+
+        return FALLBACK_LORA
+
+
+    # -----------------------------------------------------
+    # ACTIVE
+    # -----------------------------------------------------
+
+    print(
+        "ACTIVE ADAPTER:"
+    )
+
+    print(
+        active_adapter
+    )
+
+    return active_adapter
+
+
+# =========================================================
+# 5. ACTIVE LORA
+# =========================================================
+
+LORA_MODEL = get_active_adapter()
+
+
+# =========================================================
+# 6. FASTAPI
+# =========================================================
 
 app = FastAPI(
-    title="DAI Legal Model API",
-    description="Qwen 2.5 7B + LoRA V4",
-    version="1.0"
+    title="DAI Legal Model API"
 )
 
 
-# ============================================================
-# REQUEST
-# ============================================================
+# =========================================================
+# 7. REQUEST
+# =========================================================
 
-class GenerateRequest(BaseModel):
+class ChatRequest(BaseModel):
+
     prompt: str
-    max_new_tokens: int = Field(default=MODEL_MAX_NEW_TOKENS, ge=1, le=MODEL_MAX_NEW_TOKENS)
+    max_new_tokens: int = 256
 
 
-# ============================================================
-# LOAD MODEL
-# ============================================================
+# =========================================================
+# 8. GPU CHECK
+# =========================================================
 
+print("\n" + "=" * 60)
+print("GPU CHECK")
 print("=" * 60)
-print("LOAD QWEN 2.5 7B + LORA V4")
-print("=" * 60)
+
+print(
+    "CUDA:",
+    torch.cuda.is_available()
+)
+
+if not torch.cuda.is_available():
+
+    raise RuntimeError(
+        "Không tìm thấy CUDA."
+    )
+
+
+print(
+    "GPU:",
+    torch.cuda.get_device_name(0)
+)
+
+
+vram = (
+    torch.cuda.get_device_properties(0).total_memory
+    / 1024**3
+)
+
+
+print(
+    f"VRAM: {vram:.1f} GB"
+)
+
+
+# =========================================================
+# 9. 4-BIT QUANTIZATION
+# =========================================================
 
 bnb_config = BitsAndBytesConfig(
+
     load_in_4bit=True,
+
     bnb_4bit_quant_type="nf4",
+
     bnb_4bit_compute_dtype=torch.bfloat16,
-    bnb_4bit_use_double_quant=True
+
+    bnb_4bit_use_double_quant=True,
 )
 
-print("Đang load tokenizer...")
+
+# =========================================================
+# 10. LOAD TOKENIZER
+# =========================================================
+
+print("\n" + "=" * 60)
+print("LOADING TOKENIZER")
+print("=" * 60)
 
 tokenizer = AutoTokenizer.from_pretrained(
+
     BASE_MODEL,
-    trust_remote_code=True
+
+    cache_dir=HF_CACHE,
 )
 
-print("Đang load base model...")
+
+if tokenizer.pad_token is None:
+
+    tokenizer.pad_token = tokenizer.eos_token
+
+
+# =========================================================
+# 11. LOAD BASE MODEL
+# =========================================================
+
+print("\n" + "=" * 60)
+print("LOADING QWEN2.5-7B")
+print("=" * 60)
 
 model = AutoModelForCausalLM.from_pretrained(
+
     BASE_MODEL,
+
     quantization_config=bnb_config,
+
     device_map="auto",
-    torch_dtype=torch.bfloat16,
-    trust_remote_code=True
+
+    cache_dir=HF_CACHE,
 )
 
-print("Đang load LoRA V4...")
 
-model = PeftModel.from_pretrained(
-    model,
+print(
+    "Base model loaded."
+)
+
+
+# =========================================================
+# 12. LOAD ACTIVE LORA
+# =========================================================
+
+print("\n" + "=" * 60)
+print("LOADING ACTIVE LORA")
+print("=" * 60)
+
+print(
+    "Adapter:",
     LORA_MODEL
 )
 
+
+model = PeftModel.from_pretrained(
+
+    model,
+
+    LORA_MODEL,
+)
+
+
 model.eval()
 
-print("=" * 60)
-print("MODEL V4 LOADED SUCCESSFULLY")
-print("=" * 60)
+
+print(
+    "Active LoRA loaded successfully."
+)
 
 
-# ============================================================
-# HEALTH CHECK
-# ============================================================
+# =========================================================
+# 13. MODEL INFO
+# =========================================================
+
+print("\n" + "=" * 60)
+print("MODEL READY")
+print("=" * 60)
+
+print(
+    "Base:",
+    BASE_MODEL
+)
+
+print(
+    "LoRA:",
+    LORA_MODEL
+)
+
+print(
+    "Registry:",
+    REGISTRY_FILE
+)
+
+
+# =========================================================
+# 14. HÀM INFERENCE
+# =========================================================
+
+def ask_model(question: str, max_new_tokens: int = 256):
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Bạn là trợ lý hỗ trợ tra cứu thủ tục hành chính. "
+                "Trả lời bằng tiếng Việt, ngắn gọn, rõ ràng. "
+                "Với câu hỏi pháp lý, chỉ kết luận dựa trên bằng chứng "
+                "được cung cấp trong prompt; nếu thiếu căn cứ, hãy nêu rõ."
+            ),
+        },
+        {"role": "user", "content": question},
+    ]
+
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {key: value.to(model.device) for key, value in inputs.items()}
+
+    # Giới hạn giá trị để tránh request vô tình yêu cầu sinh quá dài.
+    max_new_tokens = max(1, min(int(max_new_tokens), 1024))
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            repetition_penalty=1.05,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    input_length = inputs["input_ids"].shape[1]
+    generated_tokens = outputs[0][input_length:]
+    answer = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+    return answer.strip()
+
+
+# =========================================================
+# 15. ROOT
+# =========================================================
 
 @app.get("/")
 def root():
     return {
-        "success": True,
-        "message": "DAI Legal Model API đang chạy",
-        "model": "Qwen2.5-7B-Instruct + LoRA V4"
+        "status": "running",
+        "base_model": BASE_MODEL,
+        "active_adapter": LORA_MODEL,
+        "registry": REGISTRY_FILE,
     }
 
 
-# ============================================================
-# GENERATE
-# ============================================================
+# =========================================================
+# 16. GENERATE - RESPONSE CONTRACT CỦA CORE API
+# Core API đọc trường `answer`, không phải `response`.
+# =========================================================
 
 @app.post("/generate")
-def generate(
-    request: GenerateRequest,
-    request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    citation_attempt: int | None = Header(
-        default=None, alias="X-Citation-Attempt"
-    ),
-):
-    started_at = time.perf_counter()
-    prompt = request.prompt
-
-    if not prompt.strip():
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=400,
-            detail="prompt không được để trống"
-        )
-
-    # Chỉ log metadata, không in toàn bộ nội dung pháp lý của người dùng.
-    has_evidence_section = "=== EVIDENCE ===" in prompt
-    prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-
-    print(
-        "[MODEL API] request received:",
-        f"request_id={request_id or 'not_provided'}",
-        f"citation_attempt={citation_attempt or 'not_provided'}",
-        f"prompt_chars={len(prompt)}",
-        f"prompt_sha256={prompt_sha256}",
-        f"has_evidence_section={has_evidence_section}",
-        flush=True,
+def generate(request: ChatRequest):
+    answer = ask_model(
+        request.prompt,
+        max_new_tokens=request.max_new_tokens,
     )
-
-    messages = [
-        {
-            "role": "user",
-            "content": prompt
-        }
-    ]
-
-    formatted_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-    inputs = tokenizer(
-        formatted_prompt,
-        return_tensors="pt",
-        truncation=False,
-    ).to(model.device)
-
-    input_token_count = int(inputs["input_ids"].shape[1])
-    formatted_prompt_sha256 = hashlib.sha256(
-        formatted_prompt.encode("utf-8")
-    ).hexdigest()
-    print(
-        "[MODEL API] chat_template applied:",
-        f"formatted_prompt_chars={len(formatted_prompt)}",
-        f"formatted_prompt_sha256={formatted_prompt_sha256}",
-        f"input_tokens={input_token_count}",
-        flush=True,
-    )
-
-    generation_started_at = time.perf_counter()
-    try:
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=request.max_new_tokens,
-                do_sample=False,
-                repetition_penalty=1.1,
-                pad_token_id=tokenizer.eos_token_id
-            )
-    except Exception as exc:
-        print(
-            "[MODEL API] generation failed:",
-            f"request_id={request_id or 'not_provided'}",
-            f"citation_attempt={citation_attempt or 'not_provided'}",
-            f"exception_type={type(exc).__name__}",
-            f"elapsed_ms={round((time.perf_counter() - generation_started_at) * 1000, 2)}",
-            flush=True,
-        )
-        raise
-
-    generated_tokens = outputs[0][input_token_count:]
-
-    answer = tokenizer.decode(
-        generated_tokens,
-        skip_special_tokens=True
-    ).strip()
-
-    processing_time_ms = round(
-        (time.perf_counter() - started_at) * 1000,
-        2
-    )
-
-    output_token_count = int(generated_tokens.shape[0])
-
-    print(
-        "[MODEL API] generation complete:",
-        f"request_id={request_id or 'not_provided'}",
-        f"citation_attempt={citation_attempt or 'not_provided'}",
-        f"input_tokens={input_token_count}",
-        f"output_tokens={output_token_count}",
-        f"processing_time_ms={processing_time_ms}",
-        flush=True,
-    )
-
     return {
         "success": True,
         "answer": answer,
-        "processing_time_ms": processing_time_ms,
-        "input_tokens": input_token_count,
-        "output_tokens": output_token_count,
-        "prompt_chars": len(prompt),
-        "evidence_section_detected": has_evidence_section,
     }
 
 
-
-# ============================================================
-# RUN SERVER
-# ============================================================
+# =========================================================
+# 17. RUN SERVER
+# =========================================================
 
 if __name__ == "__main__":
-
-    uvicorn.run(
-        app,
-        host=HOST,
-        port=PORT
-    )
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

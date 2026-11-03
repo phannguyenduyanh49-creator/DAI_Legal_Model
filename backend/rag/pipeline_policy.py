@@ -43,11 +43,16 @@ def choose_data_source(
     allow_external: bool,
     mcp_tool_allowed: bool = True,
 ) -> str:
-    """Choose local, external, or permission flow without implicit MCP access."""
+    """Choose a source without claiming empty local results are evidence.
+
+    Returns one of: ``local``, ``external``, ``permission``, ``blocked``.
+    ``blocked`` means no usable local evidence exists and external lookup is
+    unavailable because the MCP tool is not allowed by policy.
+    """
+    if has_local_evidence and (not mcp_tool_allowed or enough_data is not False or not allow_external):
+        return "local"
     if not mcp_tool_allowed:
-        return "local"
-    if has_local_evidence and (enough_data is not False or not allow_external):
-        return "local"
+        return "blocked"
     if allow_external:
         return "external"
     return "permission"

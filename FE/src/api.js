@@ -1,145 +1,368 @@
 const localHostnames = new Set(["localhost", "127.0.0.1"]);
+
 const configuredGatewayUrl = import.meta.env?.VITE_GATEWAY_API_URL;
+
 const defaultGatewayUrl =
-  typeof window !== "undefined" && localHostnames.has(window.location.hostname)
-    ? `http://${window.location.hostname}:8002`
+  typeof window !== "undefined" &&
+  localHostnames.has(window.location.hostname)
+    ? `http://${window.location.hostname}:8000`
     : "";
 
-export const API_BASE_URL = (configuredGatewayUrl || defaultGatewayUrl).replace(/\/$/, "");
-export const LEGAL_QUERY_URL = `${API_BASE_URL}/api/v2/legal-query`;
-export const GATEWAY_HEALTH_URL = `${API_BASE_URL}/health`;
+export const API_BASE_URL = (
+  configuredGatewayUrl || defaultGatewayUrl
+).replace(/\/$/, "");
+
+export const LEGAL_QUERY_URL =
+  `${API_BASE_URL}/api/v1/chat/completions`;
+
+export const GATEWAY_HEALTH_URL = `${API_BASE_URL}/`;
 
 function assertGatewayConfigured(baseUrl) {
   if (!baseUrl) {
-    throw new Error("Chưa cấu hình VITE_GATEWAY_API_URL cho môi trường này.");
+    throw new Error(
+      "Chưa cấu hình VITE_GATEWAY_API_URL cho môi trường này."
+    );
   }
 }
 
 async function responseError(response) {
-  const contentType = response.headers.get("content-type") || "";
-  const message = `Dịch vụ chưa thể xử lý yêu cầu (HTTP ${response.status}).`;
-  let data = {};
+  const contentType =
+    response.headers.get("content-type") || "";
+
+  let detail = "";
 
   if (contentType.includes("application/json")) {
     try {
-      data = await response.json();
+      const data = await response.json();
+
+      detail =
+        typeof data?.detail === "string"
+          ? ` ${data.detail}`
+          : "";
     } catch {
-      // Keep the generic HTTP error; do not expose arbitrary server details.
+      // Giữ thông báo lỗi HTTP mặc định.
     }
   }
 
-  const error = new Error(message);
+  const error = new Error(
+    `Dịch vụ chưa thể xử lý yêu cầu (HTTP ${response.status}).${detail}`
+  );
+
   error.telemetry = {
-    request_id: response.headers.get("x-request-id") || data?.request_id,
-    failure_stage: response.headers.get("x-failure-stage") || data?.failure_stage,
-    failure_reason_code: response.headers.get("x-failure-reason-code") || data?.failure_reason_code,
-    exception_type: response.headers.get("x-exception-type") || data?.exception_type,
-    upstream_status_code: Number(response.headers.get("x-upstream-status-code")) || data?.upstream_status_code,
+    request_id: response.headers.get("x-request-id"),
+    failure_stage: response.headers.get("x-failure-stage"),
+    failure_reason_code: response.headers.get(
+      "x-failure-reason-code"
+    ),
+    exception_type: response.headers.get("x-exception-type"),
+    upstream_status_code:
+      Number(
+        response.headers.get("x-upstream-status-code")
+      ) || undefined,
   };
+
   return error;
 }
 
-export async function getGatewayHealth({ baseUrl = API_BASE_URL } = {}) {
+export async function getGatewayHealth({
+  baseUrl = API_BASE_URL,
+} = {}) {
   assertGatewayConfigured(baseUrl);
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`, { method: "GET" });
-  if (!response.ok) throw await responseError(response);
-  return response.json();
+
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/`,
+    { method: "GET" }
+  );
+
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+
+  const data = await response.json();
+
+  return {
+    status: data?.success ? "HEALTHY" : "UNHEALTHY",
+    ...data,
+  };
 }
 
-export async function askLegalQuery(query, { allowExternal = false, domainHint = "", signal, baseUrl = API_BASE_URL } = {}) {
-  assertGatewayConfigured(baseUrl);
-  const requestBody = { query, allow_external: Boolean(allowExternal) };
-  if (typeof domainHint === "string" && domainHint.trim()) {
-    requestBody.domain_hint = domainHint.trim();
+async function parseCoreStream(response) {
+  const contentType =
+    response.headers.get("content-type") || "";
+
+  if (!contentType.includes("text/event-stream")) {
+    const result = await response.json();
+    return normalizeGatewayResult(result);
   }
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/v2/legal-query`, {
-    method: "POST",
-    credentials: "include",
+
+  const raw = await response.text();
+
+  let answer = "";
+  let done = {};
+
+  for (const block of raw.split(/\r?\n\r?\n/)) {
+    if (!block.trim()) continue;
+
+    let eventName = "";
+    const dataLines = [];
+
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+
+    if (!dataLines.length) continue;
+
+    let payload;
+
+    try {
+      payload = JSON.parse(dataLines.join("\n"));
+    } catch {
+      continue;
+    }
+
+    if (
+      eventName === "chunk" &&
+      typeof payload?.delta === "string"
+    ) {
+      answer += payload.delta;
+    }
+
+    if (eventName === "done") {
+      done = payload || {};
+    }
+  }
+
+  const pipeline =
+    done.pipeline && typeof done.pipeline === "object"
+      ? done.pipeline
+      : {};
+
+  const outcome =
+    done.outcome ||
+    pipeline.response_outcome ||
+    "answered_unverified";
+
+  const success = done.status === "done";
+
+  return {
+    status: success ? "SUCCESS" : "FAILED",
+    outcome,
+    answer: answer || null,
+    processing_time_ms: Number(
+      pipeline.processing_time_ms ||
+      pipeline.total_duration_ms ||
+      0
+    ),
+    pipeline_execution: pipeline,
+    session_id: done.session_id,
+    verifier: done.verifier,
+    verifier_scope: done.verifier_scope,
+  };
+}
+
+function normalizeGatewayResult(result) {
+  if (
+    result &&
+    typeof result === "object" &&
+    ["SUCCESS", "FAILED"].includes(result.status) &&
+    (
+      typeof result.answer === "string" ||
+      result.answer === null
+    ) &&
+    typeof result.processing_time_ms === "number" &&
+    result.pipeline_execution &&
+    typeof result.pipeline_execution === "object"
+  ) {
+    return result;
+  }
+
+  return {
+    status: result?.success === false ? "FAILED" : "SUCCESS",
+    outcome: result?.outcome || "answered_unverified",
+    answer:
+      typeof result?.answer === "string"
+        ? result.answer
+        : null,
+    processing_time_ms: Number(
+      result?.processing_time_ms || 0
+    ),
+    pipeline_execution:
+      result?.pipeline_execution ||
+      result?.pipeline ||
+      {},
+    ...result,
+  };
+}
+
+export async function askLegalQuery(
+  query,
+  {
+    allowExternal = false,
+    domainHint = "",
     signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(requestBody),
-  });
+    baseUrl = API_BASE_URL,
+  } = {}
+) {
+  assertGatewayConfigured(baseUrl);
 
-  if (!response.ok) throw await responseError(response);
+  const prompt = String(query || "").trim();
 
-  const result = await response.json();
+  if (!prompt) {
+    throw new Error("Vui lòng nhập câu hỏi pháp lý.");
+  }
+
+  const requestBody = {
+    prompt,
+    allow_external: Boolean(allowExternal),
+  };
+
   if (
-    !result
-    || typeof result !== "object"
-    || !["SUCCESS", "FAILED"].includes(result.status)
-    || (result.outcome !== undefined && ![
-      "answered", "answered_unverified", "withheld", "needs_clarification", "verification_failed",
-    ].includes(result.outcome))
-    || !(typeof result.answer === "string" || result.answer === null)
-    || typeof result.processing_time_ms !== "number"
-    || !result.pipeline_execution
-    || typeof result.pipeline_execution !== "object"
-    || Array.isArray(result.pipeline_execution)
+    typeof domainHint === "string" &&
+    domainHint.trim()
   ) {
-    throw new Error("Gateway trả về dữ liệu không đúng định dạng.");
+    requestBody.policy_domain = domainHint.trim();
   }
 
-  return result;
-}
-
-export async function getDomains({ baseUrl = API_BASE_URL } = {}) {
-  assertGatewayConfigured(baseUrl);
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/v2/domains/`, { method: "GET" });
-  if (!response.ok) throw await responseError(response);
-  const domains = await response.json();
-  if (!Array.isArray(domains) || domains.some((domain) => typeof domain !== "string")) {
-    throw new Error("Domain API returned an invalid domain list.");
-  }
-  return domains;
-}
-
-const readinessStates = new Set(["unknown", "available", "unavailable"]);
-
-export async function getDomainReadiness({ baseUrl = API_BASE_URL } = {}) {
-  assertGatewayConfigured(baseUrl);
   const response = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/api/v2/domains/readiness`,
-    { method: "GET" },
+    `${baseUrl.replace(/\/$/, "")}/api/v1/chat/completions`,
+    {
+      method: "POST",
+      credentials: "include",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream, application/json",
+      },
+      body: JSON.stringify(requestBody),
+    }
   );
-  if (!response.ok) throw await responseError(response);
-  const result = await response.json();
-  if (
-    !result
-    || !Array.isArray(result.domains)
-    || result.domains.some((domain) => (
-      !domain
-      || typeof domain.domain_id !== "string"
-      || typeof domain.registered !== "boolean"
-      || typeof domain.enabled !== "boolean"
-      || typeof domain.configured !== "boolean"
-      || !readinessStates.has(domain.data_available)
-      || !readinessStates.has(domain.retrieval_ready)
-      || !readinessStates.has(domain.model_ready)
-      || !["not_verified", "verified"].includes(domain.e2e_verified)
-      || domain.response_policy !== "evidence_required"
-      || typeof domain.reason_code !== "string"
-    ))
-  ) {
-    throw new Error("Domain readiness API returned an invalid contract.");
+
+  if (!response.ok) {
+    throw await responseError(response);
   }
-  return result;
+
+  return parseCoreStream(response);
 }
 
-export async function uploadDomainDocument(domainId, file, { baseUrl = API_BASE_URL } = {}) {
+export async function getDomains({
+  baseUrl = API_BASE_URL,
+} = {}) {
   assertGatewayConfigured(baseUrl);
-  if (typeof domainId !== "string" || !domainId.trim() || !(file instanceof Blob)) {
-    throw new Error("Choose a domain and a .txt or .md file first.");
+
+  // Core API hiện tại chưa có endpoint liệt kê domains v2.
+  return ["legal_ai"];
+}
+
+export async function getDomainReadiness({
+  baseUrl = API_BASE_URL,
+} = {}) {
+  assertGatewayConfigured(baseUrl);
+
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/`,
+    { method: "GET" }
+  );
+
+  if (!response.ok) {
+    throw await responseError(response);
   }
+
+  const health = await response.json();
+  const available = Boolean(health?.success);
+
+  return {
+    domains: [
+      {
+        domain_id: "legal_ai",
+        registered: available,
+        enabled: available,
+        configured: available,
+        data_available: available
+          ? "available"
+          : "unavailable",
+        retrieval_ready: available
+          ? "available"
+          : "unavailable",
+        model_ready: available
+          ? "available"
+          : "unavailable",
+        e2e_verified: "not_verified",
+        response_policy: "evidence_required",
+        reason_code: available
+          ? "CORE_API_RESPONDING"
+          : "CORE_API_UNAVAILABLE",
+      },
+    ],
+  };
+}
+
+export async function uploadDomainDocument(
+  domainId,
+  file,
+  { baseUrl = API_BASE_URL } = {}
+) {
+  assertGatewayConfigured(baseUrl);
+
+  if (
+    typeof domainId !== "string" ||
+    !domainId.trim() ||
+    !(file instanceof Blob)
+  ) {
+    throw new Error(
+      "Choose a domain and a .txt or .md file first."
+    );
+  }
+
   const form = new FormData();
-  form.append("file", file, file.name || "document.txt");
-  const response = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/api/v2/domains/${encodeURIComponent(domainId)}/documents`,
-    { method: "POST", credentials: "include", body: form },
+
+  form.append(
+    "file",
+    file,
+    file.name || "document.txt"
   );
-  if (!response.ok) throw await responseError(response);
-  const result = await response.json();
-  if (!result || result.status !== "indexed" || result.domain_id !== domainId || !Number.isInteger(result.chunk_count)) {
-    throw new Error("Domain document API returned an invalid indexing result.");
+
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/api/v1/domains/${encodeURIComponent(domainId)}/documents`,
+    {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    }
+  );
+
+  if (!response.ok) {
+    throw await responseError(response);
   }
-  return result;
+
+  const result = await response.json();
+
+  if (
+    result?.status === "indexed" &&
+    result.domain_id === domainId &&
+    Number.isInteger(result.chunk_count)
+  ) {
+    return result;
+  }
+
+  if (
+    result?.success === true ||
+    result?.domain_id === domainId
+  ) {
+    return {
+      status: "indexed",
+      domain_id: domainId,
+      chunk_count: Number.isInteger(result.chunk_count)
+        ? result.chunk_count
+        : 0,
+      ...result,
+    };
+  }
+
+  throw new Error(
+    "Core API trả về kết quả upload tài liệu không đúng định dạng."
+  );
 }
