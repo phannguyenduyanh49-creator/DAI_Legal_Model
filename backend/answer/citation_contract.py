@@ -13,9 +13,10 @@ CITATION_RULES = (
     "copy a citation to an unsupported sentence. Do not put "
     "citations in headings. Do not combine independent legal claims in one sentence. "
     "Never invent or alter an Evidence ID, legal source, fact, amount, condition, or "
-    "deadline. If Evidence does not support an answer, state that the available "
-    "Evidence is insufficient and identify the missing information without stating "
-    "unsupported legal facts."
+    "deadline. If Evidence supports only part of the request, omit unsupported facts "
+    "and put only missing requested detail names in the neutral heading "
+    "### Thông tin nguồn chưa nêu, with no prose beneath it. If no requested fact "
+    "is supported, do not make a factual claim; use only that neutral heading."
 )
 
 

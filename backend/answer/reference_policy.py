@@ -12,9 +12,10 @@ def reference_answer_failure_reason(
 ) -> str | None:
     """Return why an unverified answer cannot be shown as a reference answer.
 
-    This policy does not evaluate legal truth. It permits display only when the
-    configured data sufficiency check passed and every answer claim has a valid
-    citation to Evidence that was included in the model prompt.
+    This policy does not evaluate factual truth. It permits an unverified
+    partial reference only when Evidence identity passed, every factual claim
+    has a valid citation, and the answer marks requested details not covered by
+    the supplied Evidence.
     """
     if pipeline.get("response_status") == "waiting_permission":
         return "REFERENCE_ANSWER_PERMISSION_PENDING"
@@ -29,8 +30,6 @@ def reference_answer_failure_reason(
     answer_sufficiency = pipeline.get(
         "answer_data_sufficiency", pipeline.get("enough_data")
     )
-    if answer_sufficiency != "sufficient":
-        return "REFERENCE_ANSWER_ESSENTIAL_FACTS_NOT_SUFFICIENT"
     required_fields = pipeline.get(
         "answer_required_fields", pipeline.get("required_fields")
     )
@@ -39,7 +38,16 @@ def reference_answer_failure_reason(
     )
     if not isinstance(required_fields, list) or not isinstance(missing_fields, list):
         return "REFERENCE_ANSWER_DATA_SUFFICIENCY_UNAVAILABLE"
-    if missing_fields:
+    partial_evidence = (
+        answer_sufficiency == "insufficient"
+        and bool(missing_fields)
+        and isinstance(pipeline.get("evidence_count"), int)
+        and not isinstance(pipeline.get("evidence_count"), bool)
+        and pipeline.get("evidence_count", 0) > 0
+    )
+    if answer_sufficiency != "sufficient" and not partial_evidence:
+        return "REFERENCE_ANSWER_ESSENTIAL_FACTS_NOT_SUFFICIENT"
+    if missing_fields and not partial_evidence:
         return "REFERENCE_ANSWER_ESSENTIAL_FACTS_MISSING"
     evidence_ids = pipeline.get("evidence_ids")
     evidence_count = pipeline.get("evidence_count")
@@ -57,6 +65,14 @@ def reference_answer_failure_reason(
     # explicitly unverified reference when the exact supplied Evidence bundle
     # passed its independent integrity checks. No source link is trusted here.
     citation_status = pipeline.get("citation_verification")
+    if partial_evidence:
+        if citation_status != "passed":
+            return "PARTIAL_ANSWER_CITATION_INTEGRITY_NOT_PASSED"
+        if not re.search(
+            r"(?mi)^#{1,6}\s*thông tin nguồn chưa nêu(?:\s*:.*)?\s*$",
+            answer,
+        ):
+            return "PARTIAL_ANSWER_NOT_QUALIFIED"
     if citation_status != "passed":
         allowed_citation_failures = {
             "CITATION_FORMAT_INVALID",

@@ -41,10 +41,29 @@ _LIST_INTRO_RE = re.compile(
 _TRAILING_PUNCTUATION_RE = re.compile(r"[.!?,;:…]+[\"'’”)}\]]*$")
 
 
-def _split_sentences(text: str) -> list[str]:
+def _split_sentences_raw(text: str) -> list[str]:
     """Split prose on sentence punctuation while retaining the source text."""
     pieces = re.split(r"(?<=[.!?…])\s+", text.strip())
     return [piece.strip() for piece in pieces if piece.strip()]
+
+
+_ABBREVIATION_RE = re.compile(
+    r"\b(?:TP|Tp|Q|P|ThS|TS|BS|PGS|GS|Dr|Mr|Mrs|e\.g|i\.e)\.",
+    re.IGNORECASE,
+)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split prose while protecting common Vietnamese abbreviations."""
+    marker = "\ue000"
+    protected = _ABBREVIATION_RE.sub(
+        lambda match: match.group(0)[:-1] + marker,
+        text.strip(),
+    )
+    return [
+        piece.replace(marker, ".")
+        for piece in _split_sentences_raw(protected)
+    ]
 
 
 def _is_list_introduction(lines: list[str], line_index: int, text: str) -> bool:

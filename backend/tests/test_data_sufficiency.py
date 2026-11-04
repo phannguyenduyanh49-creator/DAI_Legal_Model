@@ -53,3 +53,48 @@ def test_enough_data_is_false_when_no_local_candidate_exists():
     assert enough is False
     assert required == ["full_text"]
     assert missing == ["full_text"]
+
+
+def test_complementary_chunks_of_same_procedure_can_cover_requested_fields():
+    enough, required, missing = check_enough_data(
+        "Hồ sơ mất bao lâu và lệ phí bao nhiêu?",
+        [
+            {
+                "formality_id": "procedure-1",
+                "text": "Procedure source chunk one",
+                "profile_components": "Đơn đăng ký",
+            },
+            {
+                "formality_id": "procedure-1",
+                "text": "Procedure source chunk two",
+                "processing_time": "5 ngày",
+                "fees": "100.000 đồng",
+            },
+        ],
+    )
+
+    assert enough is True
+    assert required == ["profile_components", "processing_time", "fees"]
+    assert missing == []
+
+
+def test_sufficiency_does_not_combine_unrelated_procedures_or_conflicting_values():
+    unrelated = check_enough_data(
+        "Hồ sơ mất bao lâu và lệ phí bao nhiêu?",
+        [
+            {"formality_id": "procedure-1", "text": "A", "profile_components": "Form A"},
+            {"formality_id": "procedure-2", "text": "B", "processing_time": "5 ngày", "fees": "100 đồng"},
+        ],
+    )
+    conflicting = check_enough_data(
+        "Lệ phí bao nhiêu?",
+        [
+            {"formality_id": "procedure-1", "text": "A", "fees": "100 đồng"},
+            {"formality_id": "procedure-1", "text": "B", "fees": "200 đồng"},
+        ],
+    )
+
+    assert unrelated[0] is False
+    assert unrelated[2]
+    assert conflicting[0] is False
+    assert conflicting[2] == ["fees"]

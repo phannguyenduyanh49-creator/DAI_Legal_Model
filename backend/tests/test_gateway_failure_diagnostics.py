@@ -228,6 +228,46 @@ def test_reference_answer_policy_allows_only_complete_citation_linked_unverified
     assert _business_outcome(result, False, True) == "answered_unverified"
 
 
+def test_reference_answer_policy_allows_cited_partial_answer_with_explicit_missing_details_heading():
+    result = unverified_reference_result(
+        enough_data="insufficient",
+        required_fields=["profile_components", "fees"],
+        missing_fields=["fees"],
+    )
+    result.answer = (
+        "### Trả lời\n"
+        "The evidence supports this procedural statement. [Evidence ID: rag:reference-1]\n"
+        "### Thông tin nguồn chưa nêu: phí"
+    )
+
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, result.verifier_status
+    ) is None
+    assert _business_outcome(result, False, True) == "answered_unverified"
+
+
+def test_reference_answer_policy_rejects_partial_answer_without_citation_or_missing_details_heading():
+    result = unverified_reference_result(
+        enough_data="insufficient",
+        required_fields=["profile_components", "fees"],
+        missing_fields=["fees"],
+    )
+    result.answer = "The evidence supports this procedural statement. [Evidence ID: rag:reference-1]"
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, result.verifier_status
+    ) == "PARTIAL_ANSWER_NOT_QUALIFIED"
+
+    result.answer = (
+        "### Trả lời\n"
+        "The evidence supports this procedural statement. [Evidence ID: rag:reference-1]\n"
+        "### Thông tin nguồn chưa nêu: phí"
+    )
+    result.pipeline["citation_verification"] = "failed"
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "failed"
+    ) == "PARTIAL_ANSWER_CITATION_INTEGRITY_NOT_PASSED"
+
+
 def test_reference_answer_policy_can_show_generated_text_when_only_citations_failed():
     result = unverified_reference_result(
         citation_verification="failed",
@@ -305,7 +345,7 @@ def test_unavailable_or_inconclusive_grounding_is_unverified_not_rejected(ground
         ({"evidence_count": 0, "evidence_ids": [], "evidence_integrity_status": "failed", "cited_evidence_ids": [],
           "claim_verification_results": []}, "EVIDENCE_INTEGRITY_NOT_PASSED"),
         ({"enough_data": "insufficient", "missing_fields": ["fees"]},
-         "REFERENCE_ANSWER_ESSENTIAL_FACTS_NOT_SUFFICIENT"),
+         "PARTIAL_ANSWER_NOT_QUALIFIED"),
         ({"claim_verification_results": []}, "CLAIM_CITATION_RESULTS_MISSING"),
         ({"claim_grounding_status": "insufficient_evidence"}, "CLAIM_GROUNDING_NOT_ELIGIBLE"),
         ({"confidence_status": "not_required", "claim_grounding_status": "passed"},

@@ -37,6 +37,31 @@ def test_extracts_explicit_evidence_id_at_sentence_end():
     assert structured.claims[0].evidence_ids == ["rag:example-001"]
 
 
+def test_vietnamese_city_abbreviation_does_not_split_a_cited_claim():
+    structured = structure_answer_with_explicit_evidence(
+        "Sản phẩm được bán tại TP. Hồ Chí Minh. "
+        "[Evidence ID: rag:example-001]"
+    )
+    verification = Verifier().verify(structured, make_bundle())
+
+    assert len(structured.claims) == 1
+    assert structured.claims[0].evidence_ids == ["rag:example-001"]
+    assert structured.metadata["citation_parse_errors"] == []
+    assert verification.citation_integrity_passed is True
+
+
+def test_partial_answer_missing_details_heading_is_not_parsed_as_a_claim():
+    structured = structure_answer_with_explicit_evidence(
+        "Supported fact. [Evidence ID: rag:example-001]\n"
+        "### Thông tin nguồn chưa nêu: phí"
+    )
+
+    assert len(structured.claims) == 1
+    assert structured.claims[0].claim == "Supported fact."
+    assert structured.claims[0].evidence_ids == ["rag:example-001"]
+    assert structured.metadata["citation_parse_errors"] == []
+
+
 def test_citation_on_standalone_paragraph_end_binds_only_previous_claim():
     structured = structure_answer_with_explicit_evidence(
         "First legal statement.\nSecond legal statement.\n"
@@ -653,7 +678,21 @@ def test_prompt_never_allows_an_id_whose_evidence_section_was_not_included():
     assert "Không rút gọn đến mức bỏ mất ý được hỏi." in prompt
     assert "tổng hợp các nguồn liên quan trực tiếp" in prompt
     assert "Do not put citations in headings" in prompt
-    assert "available Evidence is insufficient" in prompt
+    assert "End with the neutral heading" in prompt
+
+
+def test_prompt_budget_keeps_short_complementary_evidence_after_truncating_large_item():
+    bundle = EvidenceBundle(evidences=[
+        Evidence(evidence_id="rag:large", source_type="rag", content="A" * 2000, score=0.99),
+        Evidence(evidence_id="rag:complement", source_type="rag", content="Complementary fact.", score=0.8),
+    ])
+    assembler = PromptAssembler(max_evidence_chars=700)
+
+    included = assembler.included_evidences(bundle)
+
+    assert [item.evidence_id for item in included] == ["rag:large", "rag:complement"]
+    assert "Evidence content truncated" in included[0].content
+    assert included[1].content == "Complementary fact."
 
 
 def test_prompt_skips_oversized_middle_evidence_when_later_evidence_fits():
@@ -678,6 +717,7 @@ def test_prompt_contains_answer_quality_and_citation_instructions_once():
     assert prompt.count("End every factual sentence") == 1
     assert "address the requested parts in the order asked" in prompt
     assert "Avoid repeating facts" in prompt
+    assert "### Thông tin nguồn chưa nêu" in prompt
 
 
 def test_prompt_applies_domain_template_using_query_and_bounded_evidence():
