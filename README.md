@@ -1,342 +1,472 @@
-DAI-Legal-Model
-AI Legal Assistant for Vietnamese administrative procedures
+# DAI Legal Model
 
-DAI-Legal-Model is an academic research prototype for answering Vietnamese legal and administrative-procedure questions. It combines a React/Vite frontend, FastAPI services, domain-scoped retrieval, a Qwen2.5-7B-Instruct model with a LoRA V4 adapter, and evidence/citation controls.
-Disclaimer: This project is for academic and research use. It is not a substitute for advice from a qualified legal professional. Users should verify important procedures, fees, deadlines, and legal requirements against current official sources.
+**Trợ lý AI hỗ trợ tra cứu pháp luật và thủ tục hành chính Việt Nam**  
+Academic research prototype | React + FastAPI + RAG + Qwen2.5-7B + MCP
 
-Contents
-- Overview
-- Key capabilities
-- Architecture
-- Request and retrieval flow
-- Domain-scoped knowledge bases
-- Retrieval infrastructure
-- MCP and external retrieval
-- Technology stack
-- Project structure
-- Requirements
-- Setup
-- Run the application
-- API endpoints
-- Tests and build
-- Search-store migration (optional/staged)
-- Datasets and model artifacts
-- Limitations and safety notes
-Overview
-The application separates the user interface, request gateway, retrieval/orchestration pipeline, and model inference service.
-Component	Responsibility
-Frontend	Chat interface, domain selection, document upload, and answer/source presentation
-Core Gateway	Frontend-facing API, domain routing, request handling, and response status
-Core API	Query analysis, retrieval, evidence construction, prompt assembly, and orchestration
-Retrieval layer	Domain-filtered catalog/vector/search retrieval and reranking where configured
-Evidence and verifier	Evidence packaging, citation parsing, and citation/evidence checks
-Model API	Local inference using Qwen2.5-7B-Instruct and the configured LoRA V4 adapter
-MCP	Permission-controlled access to configured external administrative-procedure sources
+DAI Legal Model là dự án nghiên cứu xây dựng trợ lý AI giúp người dùng đặt câu hỏi về pháp luật và thủ tục hành chính bằng tiếng Việt. Hệ thống kết hợp mô hình ngôn ngữ lớn, truy xuất tài liệu nội bộ (RAG), xây dựng bằng chứng (Evidence Builder), kiểm tra trích dẫn (Verifier) và MCP để truy vấn một số nguồn dữ liệu bên ngoài khi được người dùng cho phép.
 
+> **Lưu ý:** Đây là sản phẩm thử nghiệm phục vụ học tập và nghiên cứu, không phải dịch vụ tư vấn pháp lý chuyên nghiệp. Câu trả lời của AI không thay thế văn bản pháp luật hoặc ý kiến của luật sư/cơ quan có thẩm quyền. Với thủ tục, thời hạn, lệ phí và quy định quan trọng, hãy kiểm tra lại nguồn chính thức và hiệu lực văn bản.
 
-The frontend submits legal queries to POST /api/v2/legal-query through the Gateway. The default local Gateway URL is http://127.0.0.1:8002.
+## Mục lục
 
-A successful HTTP response does not necessarily mean the answer pipeline succeeded. Clients should inspect the response body's status and verification fields rather than relying only on the HTTP status code.
-Key capabilities
-- Multi-domain chat: registered domains can be selected from the frontend.
-- Domain-scoped document upload: supported .txt, .md, and .xlsx files can be uploaded to a selected domain.
-- Local-first retrieval: the system attempts configured local retrieval before considering external retrieval.
-- Retrieval and reranking: the configured RAG path can use BGE-M3 embeddings, Qdrant, and a reranker.
-- Evidence-based generation: retrieved material is assembled into evidence context for the model.
-- Citation controls: citation formatting/parsing and verifier checks help detect unsupported or malformed citations.
-- Permission-controlled MCP: external retrieval is gated by the application's permission policy.
-- Staged search-store option: PostgreSQL and Elasticsearch components are available for a controlled migration path; Qdrant remains the default unless explicitly configured otherwise.
-Architecture
-Browser (React / Vite)
-        |
-        v
-Core Gateway :8002
-        |
-        v
-Core API :8000
-  |       |        |
-  |       |        +--> Domain / Catalog / RAG Retrieval
-  |       |                       |
-  |       |                       v
-  |       |                Reranking (when configured)
-  |       |                       |
-  |       |                       v
-  |       +----------------> Evidence Builder
-  |                               |
-  |                               v
-  |                         Prompt Assembly
-  |                               |
-  v                               v
-Diagnostics / Response <------ Model API :8001
-                                  |
-                                  v
-                         Qwen2.5-7B-Instruct
-                               + LoRA V4
-                                  |
-                                  v
-                       Citation / Evidence Checks
-Default local ports
-Service	Port	Role
-Frontend (Vite)	5173	Browser UI
-Core API	8000	Retrieval and answer pipeline
-Model API	8001	Local model inference
-Core Gateway	8002	Frontend-facing API
-Qdrant	6333	Local vector database
-Elasticsearch	9200	Optional staged search backend
+1. [Giới thiệu dự án](#1-giới-thiệu-dự-án)
+2. [Chức năng chính](#2-chức-năng-chính)
+3. [Kiến trúc hệ thống](#3-kiến-trúc-hệ-thống)
+4. [Công nghệ sử dụng](#4-công-nghệ-sử-dụng)
+5. [Cấu trúc thư mục](#5-cấu-trúc-thư-mục)
+6. [Yêu cầu môi trường](#6-yêu-cầu-môi-trường)
+7. [Cài đặt](#7-cài-đặt)
+8. [Cấu hình trước khi chạy](#8-cấu-hình-trước-khi-chạy)
+9. [Khởi chạy hệ thống](#9-khởi-chạy-hệ-thống)
+10. [Hướng dẫn sử dụng](#10-hướng-dẫn-sử-dụng)
+11. [API cơ bản](#11-api-cơ-bản)
+12. [Chạy kiểm thử](#12-chạy-kiểm-thử)
+13. [Xử lý lỗi thường gặp](#13-xử-lý-lỗi-thường-gặp)
+14. [Giới hạn và an toàn](#14-giới-hạn-và-an-toàn)
 
+---
 
-Request and retrieval flow
-At a high level, a request follows this sequence:
-1. The frontend sends the query and selected domain to the Gateway.
-2. The Gateway forwards the request to the Core API.
-3. Query analysis and domain policy determine the applicable retrieval path.
-4. The retrieval layer searches the selected domain's configured knowledge source.
-5. Retrieved candidates are ranked/filtered and assembled into an evidence bundle.
-6. The prompt assembler passes the question and available evidence to the Model API.
-7. The model generates a response.
-8. Citation/evidence checks determine the response status returned to the frontend.
-The exact retrieval components depend on the configured backend and domain. A citation-linked response should not automatically be interpreted as semantically verified or legally correct.
-Domain-scoped knowledge bases
-The Gateway exposes registered domains through:
-GET /api/v2/domains/
-The frontend allows a user to select a domain and upload supported files:
-POST /api/v2/domains/{domain_id}/documents
-Supported upload formats are UTF-8 .txt, .md, and .xlsx, with a maximum upload size of 2 MiB.
+## 1. Giới thiệu dự án
 
-With the default Qdrant backend, uploaded chunks are stored in a collection named:
-domain_documents_{domain_id}
-With the explicitly configured Elasticsearch backend, PostgreSQL is the source of truth and Elasticsearch is used as the retrieval index. Retrieval remains domain-filtered.
+DAI Legal Model hướng đến việc hỗ trợ người dùng tra cứu thông tin pháp luật và thủ tục hành chính Việt Nam thông qua giao diện hội thoại.
 
-Tourism is a sample non-legal domain for isolated development fixtures. It must not fall back to the legal catalog or legal vectors. Uploaded text does not receive a fabricated public URL; the UI identifies it by filename, document ID, and chunk location.
-Retrieval infrastructure
-Qdrant (default Local RAG backend)
-Default address:
-http://localhost:6333
-The repository documents these legal collections and embedding configurations:
-Pipeline	Collection	Embedding model	Vector size
-Core API Local RAG	legal_docs_bge_m3	BAAI/bge-m3	1024
-MCP search_legal_documents	legal_docs	bkai-foundation-models/vietnamese-bi-encoder	768
+Thay vì chỉ yêu cầu mô hình trả lời dựa trên kiến thức đã học, hệ thống sử dụng RAG để tìm kiếm tài liệu liên quan, đóng gói nội dung tìm được thành Evidence và kiểm tra mối liên hệ giữa câu trả lời với các nguồn được truy xuất.
 
+Mục tiêu chính:
 
-These collections use different embedding models and vector dimensions. Each query pipeline must use the matching collection and embedding model.
-Important: backend/import_data.py recreates legal_docs. Do not run it against a populated database unless you intentionally want to replace that collection. Qdrant must be running before either retrieval path can be verified.
+- Hỗ trợ hỏi đáp pháp luật bằng tiếng Việt.
+- Tìm kiếm thông tin trong kho dữ liệu nội bộ theo từng lĩnh vực.
+- Hiển thị nguồn và căn cứ được sử dụng trong câu trả lời.
+- Hạn chế câu trả lời không có bằng chứng hoặc trích dẫn không hợp lệ.
+- Cho phép truy vấn nguồn bên ngoài thông qua MCP theo chính sách và sự đồng ý của người dùng.
 
-The documented DVC import command is:
-python backend/import_dvc_to_qdrant.py
-PostgreSQL and Elasticsearch (staged option)
-The search-store implementation uses PostgreSQL as the source of truth and a transactional outbox to synchronize document chunks into Elasticsearch. Existing Qdrant collections are left untouched. The Core API continues to use Qdrant by default until the search migration is reviewed and the Elasticsearch minimum score is calibrated on labeled queries.
+## 2. Chức năng chính
 
-See Search-store migration (optional/staged) before enabling this path.
-MCP and external retrieval
-MCP is an external retrieval layer, not a replacement for the internal Local RAG database. The intended policy is local-first: use local evidence first, and request permission before accessing the configured external source when local evidence is insufficient.
+| Chức năng | Mô tả |
+|---|---|
+| Hỏi đáp pháp luật | Tiếp nhận câu hỏi tự nhiên bằng tiếng Việt. |
+| Phân loại lĩnh vực | Định tuyến câu hỏi tới domain phù hợp. |
+| Local RAG | Tìm kiếm tài liệu trong kho dữ liệu nội bộ trước. |
+| Embedding và reranking | Biểu diễn truy vấn, tìm ứng viên và xếp hạng kết quả theo cấu hình. |
+| Evidence Builder | Chuẩn hóa và đóng gói tài liệu truy xuất thành bằng chứng. |
+| Citation và Verifier | Kiểm tra ID bằng chứng, trích dẫn và trạng thái xác minh. |
+| MCP | Truy vấn nguồn bên ngoài được cấu hình khi chính sách cho phép và người dùng đồng ý. |
+| Quản lý hội thoại | Lưu phiên và lịch sử hội thoại cục bộ theo cấu hình backend. |
+| Domain documents | Hỗ trợ tải lên tài liệu .txt, .md, .xlsx theo domain. |
 
-The documented external source is the National Public Service Portal (Dịch vụ công Quốc gia — DVC). The MCP integration restricts the external host to:
-dichvucong.gov.vn
-The documented DVC endpoints are:
-/api/v1/submitting/formality-top-search/list-by-citizen
-/api/v1/configuring/formality/get-formality-by-citizen
-Available MCP tools documented by the project include:
-- search_legal_documents
-- search_procedure
-The Core API starts the MCP server as a subprocess when the applicable policy permits the requested tool. A separate MCP terminal is normally not required when running the full application.
-Permission flow
-User question
-     |
-     v
-Local retrieval
-     |
-     v
-Is local evidence sufficient?
-     |                  |
-    YES                 NO
-     |                  |
-     v                  v
-Generate answer     Ask for permission
-                        |
-                 User allows external search?
-                    |          |
-                   YES         NO
-                    |          |
-                    v          v
-                   MCP     Do not access
-                    |      external source
-                    v
-                 DVC API
-                    |
-                    v
-             External evidence
-                    |
-                    v
-             Answer generation
-The MCP integration described here is restricted to configured DVC endpoints; it is not unrestricted Google or general web search.
+**Lưu ý:** HTTP 200 chỉ cho biết Gateway đã xử lý request ở tầng HTTP. Hãy đọc trạng thái trong response body và thông tin verifier/citation; không được mặc định mọi câu trả lời đều đã được xác minh.
 
-For a standalone MCP development check, the README's documented command is:
-python mcp_server.py
-Technology stack
-Area	Technologies
-Frontend	React 19, Vite, Tailwind CSS, Lucide React
-Backend APIs	Python, FastAPI
-Language model	Qwen2.5-7B-Instruct + LoRA V4
-Embeddings	BAAI/bge-m3 (for the documented Core API legal collection)
-Vector database	Qdrant
-Reranking	Configured BGE reranker
-External integration	MCP, National Public Service Portal (DVC)
-Optional search store	PostgreSQL, Elasticsearch
-Testing	Pytest, Node.js built-in test runner
+## 3. Kiến trúc hệ thống
 
+Luồng tổng quan:
 
-Project structure
+```text
+User
+ |
+ v
+React / Vite Frontend (:5173)
+ |
+ v
+Core Gateway (:8002)
+ |
+ v
+Core API (:8000)
+ |             |                  |
+ |             |                  +--> Domain Router / Query Analysis
+ |             |
+ |             +--> Local Retrieval
+ |                    |
+ |                    +--> Embedding (BGE-M3)
+ |                    +--> Qdrant
+ |                    +--> Reranker (when configured)
+ |                    |
+ |                    v
+ |                Evidence Builder
+ |                    |
+ |                    v
+ |                Prompt Assembly
+ |                    |
+ |                    v
+ |                Model API (:8001)
+ |                    |
+ |                    v
+ |             Qwen2.5-7B-Instruct + LoRA V4
+ |                    |
+ |                    v
+ |             Citation / Evidence Verifier
+ |
+ +--> MCP (permission-controlled external retrieval)
+          |
+          v
+     Configured external source
+```
+
+### Luồng xử lý câu hỏi
+
+1. Người dùng chọn lĩnh vực và gửi câu hỏi từ Frontend.
+2. Gateway tiếp nhận request và chuyển tới Core API.
+3. Query Analysis / Domain Router phân tích ý định và lĩnh vực.
+4. Hệ thống ưu tiên truy xuất dữ liệu nội bộ (Local RAG).
+5. Kết quả được lọc, xếp hạng và chuyển tới Evidence Builder.
+6. Prompt Assembly tạo ngữ cảnh có bằng chứng cho Model API.
+7. Qwen2.5-7B-Instruct kết hợp LoRA V4 sinh câu trả lời.
+8. Citation và Verifier kiểm tra các thông tin liên quan đến Evidence.
+9. Gateway trả kết quả cùng trạng thái xử lý cho Frontend.
+
+### Nguyên tắc MCP
+
+MCP là lớp truy xuất nguồn bên ngoài, không thay thế Qdrant và Local RAG. Khi dữ liệu nội bộ chưa đủ, hệ thống áp dụng luồng xin phép người dùng trước khi gọi nguồn bên ngoài theo policy. MCP hiện được mô tả trong dự án với tích hợp Cổng Dịch vụ công Quốc gia; không nên hiểu đây là công cụ tìm kiếm Internet không giới hạn.
+
+## 4. Công nghệ sử dụng
+
+| Thành phần | Công nghệ |
+|---|---|
+| Frontend | React 19, Vite, Tailwind CSS, Lucide React |
+| Backend | Python, FastAPI |
+| LLM | Qwen2.5-7B-Instruct |
+| Fine-tuning adapter | LoRA V4 |
+| Quantization | 4-bit NF4, compute dtype BF16 (theo cấu hình Model API) |
+| Embedding | BGE-M3 cho pipeline Local RAG được mô tả |
+| Vector database | Qdrant |
+| Reranking | BGE Reranker (khi được cấu hình) |
+| External tools | MCP |
+| Database / search bổ sung | PostgreSQL, Elasticsearch (nhánh triển khai tùy chọn) |
+| Testing | Pytest, Node.js test runner |
+
+## 5. Cấu trúc thư mục
+
+Cấu trúc rút gọn:
+
+```text
 DAI-Legal-Model/
-├── FE/                         # React/Vite frontend and Node tests
+├── FE/                         # React/Vite frontend
 ├── backend/
-│   ├── answer/                 # Citation formatting, generation, diagnostics
-│   ├── catalog/                # Catalog lookup and service logic
-│   ├── evidence/               # Evidence construction and source summaries
-│   ├── mcp/                    # MCP adapter and DVC integration
-│   ├── rag/                    # Retrieval policy and query logic
-│   ├── search/                 # PostgreSQL / Elasticsearch search store
+│   ├── answer/                 # Generation, citation, diagnostics
+│   ├── catalog/                # Catalog lookup và database
+│   ├── evidence/               # Evidence Builder, normalization
+│   ├── mcp/                    # MCP adapter và tích hợp nguồn ngoài
+│   ├── rag/                    # Retrieval pipeline và policy
+│   ├── search/                 # PostgreSQL / Elasticsearch (tùy chọn)
 │   ├── tests/                  # Backend tests
-│   ├── verifier/               # Answer/evidence verification
-│   ├── core_gateway.py         # Gateway API (port 8002)
-│   ├── main.py                 # Core API (port 8000)
-│   └── model_api.py            # Model inference API (port 8001)
-├── configs/                    # Example local configuration
-├── data/                       # Datasets and local data
-├── evals/                      # Retrieval/answer evaluation utilities
-├── gateway_openapi.json        # Gateway OpenAPI specification
-├── run_gateway_stack.py        # Starts the three Python services
+│   ├── verifier/               # Evidence / answer verification
+│   ├── core_gateway.py         # Gateway API :8002
+│   ├── main.py                 # Core API :8000
+│   └── model_api.py            # Model API :8001
+├── configs/                    # Cấu hình mẫu
+├── data/                       # Dataset và dữ liệu cục bộ
+├── evals/                      # Công cụ đánh giá
+├── mcp_server.py               # MCP server entry point
+├── run_gateway_stack.py        # Khởi chạy 3 Python services
+├── requirements.txt
+├── requirements-dev.txt
 └── README.md
-Requirements
-- Windows PowerShell or another supported Python/Node environment.
-- Python dependencies from requirements.txt.
-- Pytest dependencies from requirements-dev.txt for backend tests.
-- Node.js and npm for the frontend.
-- Docker Desktop / Docker Engine when using the Compose-managed services.
-- The required model weights, LoRA adapter, datasets, and retrieval services must be available and configured locally.
-Do not commit API keys, passwords, personal data, local chat history, virtual environments, generated build output, or model checkpoints. Confirm that datasets may be redistributed before publishing them.
-Setup
-1. Create and activate a Python environment
-Run from the repository root:
+```
+
+Một số file dữ liệu, model weights, LoRA adapter hoặc index có thể không được lưu trong Git vì dung lượng lớn hoặc điều kiện phân phối.
+
+## 6. Yêu cầu môi trường
+
+- Windows 10/11 hoặc môi trường tương thích.
+- Python phiên bản tương thích với các package trong requirements.txt.
+- Node.js và npm.
+- Git.
+- Docker Desktop / Docker Engine để chạy Qdrant và PostgreSQL bằng Docker Compose.
+- GPU NVIDIA/CUDA được khuyến nghị để chạy model 7B với cấu hình 4-bit. Khả năng chạy thực tế phụ thuộc VRAM, RAM, CUDA, PyTorch và phiên bản bitsandbytes.
+- Có sẵn model Qwen2.5-7B-Instruct, LoRA V4 adapter và dữ liệu/index cần thiết.
+
+Kiểm tra công cụ:
+
+```powershell
+python --version
+node --version
+npm --version
+docker --version
+git --version
+```
+
+## 7. Cài đặt
+
+### Bước 1. Clone repository
+
+```powershell
+git clone https://github.com/phannguyenduyanh49-creator/DAI_Legal_Model.git
+cd DAI_Legal_Model
+```
+
+### Bước 2. Tạo môi trường Python
+
+```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\\.venv\\Scripts\\Activate.ps1
 python -m pip install --upgrade pip
+```
+
+Nếu PowerShell chặn việc activate môi trường, có thể gọi trực tiếp Python trong môi trường:
+
+```powershell
+.\\.venv\\Scripts\\python.exe --version
+```
+
+### Bước 3. Cài dependencies backend
+
+```powershell
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
-If PowerShell blocks activation, use the environment's Python executable directly, for example:
-.\.venv\Scripts\python.exe -m pytest
-2. Install frontend dependencies
-cd FE
-npm.cmd install
-3. Configure local paths and services
-Before starting the backend, check the model-adapter path and project/data paths in the backend configuration. Some settings may use machine-specific absolute paths and need adjustment.
+```
 
-The frontend can use VITE_GATEWAY_API_URL in FE/.env:
+Nếu cài PyTorch/CUDA gặp lỗi, cần đối chiếu phiên bản CUDA, driver NVIDIA và hướng dẫn cài PyTorch tương ứng với môi trường máy. Không tự ý thay đổi phiên bản package đã pin nếu chưa kiểm tra tương thích.
+
+### Bước 4. Cài dependencies frontend
+
+Mở terminal tại thư mục repository:
+
+```powershell
+cd FE
+npm install
+```
+
+Sau khi cài xong, quay về thư mục gốc nếu cần chạy backend:
+
+```powershell
+cd ..
+```
+
+## 8. Cấu hình trước khi chạy
+
+### 8.1. Kiểm tra đường dẫn model và project
+
+Một số đường dẫn trong backend hiện đang được khai báo trực tiếp theo môi trường phát triển Windows. Trước khi chạy trên máy khác, hãy kiểm tra và sửa cho khớp với vị trí repository và model adapter:
+
+- backend/main.py: biến BASE_DIR và đường dẫn tới mcp_server.py.
+- backend/model_api.py: biến LORA_MODEL trỏ tới thư mục adapter LoRA V4.
+
+Ví dụ thư mục adapter:
+
+```text
+outputs/qwen-legal-lora-v4/
+```
+
+Đảm bảo thư mục adapter có các file cần thiết (ví dụ adapter_config.json, adapter_model.safetensors). Không commit model weights hoặc adapter nếu chưa xác nhận quyền phân phối.
+
+### 8.2. Frontend Gateway URL
+
+Có thể tạo file FE/.env:
+
+```env
 VITE_GATEWAY_API_URL=http://127.0.0.1:8002
-This is also the default Gateway URL for localhost. Keep secrets in environment variables or an ignored local .env file, not in tracked source files.
-Run the application
-1. Start PostgreSQL and Qdrant
-From the repository root:
-docker compose -f backend/docker-compose.yml up -d postgres qdrant
-2. Start the Python API stack
-.\.venv\Scripts\python.exe run_gateway_stack.py
-The launcher starts:
-- Core API on port 8000
-- Model API on port 8001
-- Core Gateway on port 8002
-Keep this terminal open while testing. Press Ctrl+C to stop the services started by the script.
+```
 
-The launcher monitors child-process exit codes; it does not wait for health readiness.
-3. Start the frontend
-Open a second terminal:
+Đây là địa chỉ Gateway local mặc định. Không đưa API key, mật khẩu hoặc thông tin nhạy cảm vào file được commit.
+
+### 8.3. Khởi động Qdrant và PostgreSQL
+
+Từ thư mục gốc repository:
+
+```powershell
+docker compose -f backend/docker-compose.yml up -d qdrant postgres
+```
+
+Kiểm tra container:
+
+```powershell
+docker compose -f backend/docker-compose.yml ps
+```
+
+Qdrant mặc định sử dụng:
+
+- REST API: http://127.0.0.1:6333
+- Dashboard: http://127.0.0.1:6333/dashboard
+
+PostgreSQL được khai báo trong Compose cho các thành phần catalog/search tương ứng. Qdrant vẫn là Local RAG backend mặc định theo cấu hình hiện tại.
+
+### 8.4. Dữ liệu và vector collection
+
+Hệ thống cần có dữ liệu pháp lý đã được nạp vào kho tương ứng trước khi có thể trả lời dựa trên tài liệu nội bộ.
+
+Repository có script import Dịch vụ công:
+
+```powershell
+.\\.venv\\Scripts\\python.exe backend/import_dvc_to_qdrant.py
+```
+
+Chỉ chạy import sau khi đã đọc script, xác nhận nguồn dữ liệu, collection đích và hiểu rõ tác động lên dữ liệu đang có. Một script import khác trong repository có thể tạo lại collection; không chạy trên môi trường có dữ liệu quan trọng nếu chưa backup và xác nhận.
+
+## 9. Khởi chạy hệ thống
+
+Cần giữ các terminal đang chạy dịch vụ mở trong suốt quá trình sử dụng.
+
+### Terminal 1 – Khởi chạy backend stack
+
+Tại thư mục gốc repository:
+
+```powershell
+.\\.venv\\Scripts\\python.exe run_gateway_stack.py
+```
+
+Script lần lượt khởi chạy:
+
+| Service | URL | Vai trò |
+|---|---|---|
+| Core API | http://127.0.0.1:8000 | Retrieval và xử lý câu hỏi |
+| Model API | http://127.0.0.1:8001 | Qwen + LoRA inference |
+| Core Gateway | http://127.0.0.1:8002 | API cho Frontend |
+
+Model API cần tải model và adapter khi khởi động. Lần chạy đầu có thể mất thời gian và cần đủ bộ nhớ. Launcher giám sát tiến trình con nhưng không thay thế việc kiểm tra health/readiness của từng service.
+
+Dừng stack bằng Ctrl+C.
+
+### Terminal 2 – Khởi chạy Frontend
+
+```powershell
 cd FE
-npm.cmd run dev
-Open the local URL printed by Vite, typically:
+npm run dev
+```
+
+Mở URL Vite hiển thị trong terminal, mặc định thường là:
+
+```text
 http://localhost:5173
-Runtime notes
-- The Model API loads Qwen/Qwen2.5-7B-Instruct with 4-bit NF4/BF16 settings and the configured LoRA V4 adapter at startup.
-- The Python APIs bind to 127.0.0.1 by default.
-- CORE_API_HOST, MODEL_API_HOST, and CORE_GATEWAY_HOST can override service bind hosts.
-- MODEL_API_URL can override the Core API's model-service URL.
-- python model_api.py is a separate legacy entry point; it is not launched by run_gateway_stack.py.
-- MCP is started by the Core API when the applicable permission and policy allow the requested tool.
-- Loopback binding does not add user authentication. Do not expose the Gateway publicly without an appropriate access-control layer.
-Generation limits
-The documented environment settings include:
-Variable	Default	Bounds / purpose
-MODEL_MAX_NEW_TOKENS	256	Maximum response length; bounded to 1–512
-PROMPT_MAX_EVIDENCE_CHARS	6000	Evidence prompt budget; bounded to 1,000–12,000
+```
 
+### Kiểm tra Gateway
 
-These settings can be overridden in the process environment.
-API endpoints
-Service	Method	Path	Purpose
-Core Gateway (:8002)	GET	/health	Gateway health check
-Core Gateway (:8002)	POST	/api/v2/legal-query	Submit a query
-Core Gateway (:8002)	GET	/api/v2/domains/	List registered domains
-Core Gateway (:8002)	POST	/api/v2/domains/{domain_id}/documents	Upload domain documents
-Core API (:8000)	Various	See backend/main.py	Retrieval and answer pipeline
-Model API (:8001)	POST	/generate	Generate a model response
+```powershell
+Invoke-RestMethod http://127.0.0.1:8002/health
+```
 
+Nếu frontend không kết nối được backend, kiểm tra VITE_GATEWAY_API_URL, CORS và port 8002.
 
-Example Gateway request:
+## 10. Hướng dẫn sử dụng
+
+### 10.1. Đặt câu hỏi pháp lý
+
+1. Mở giao diện tại http://localhost:5173.
+2. Chọn lĩnh vực/domain phù hợp nếu giao diện có hiển thị lựa chọn.
+3. Nhập câu hỏi pháp lý cụ thể vào khung chat.
+4. Gửi câu hỏi và chờ hệ thống truy xuất tài liệu, xử lý bằng chứng và tạo câu trả lời.
+5. Đọc nội dung trả lời cùng phần nguồn/citation và trạng thái xác minh.
+
+Ví dụ câu hỏi:
+
+- “Hồ sơ đăng ký thành lập doanh nghiệp gồm những giấy tờ gì?”
+- “Người lao động được nghỉ phép năm tối thiểu bao nhiêu ngày?”
+- “Thủ tục đăng ký tạm trú được thực hiện như thế nào?”
+- “Điều kiện để kinh doanh dịch vụ lưu trú du lịch là gì?”
+
+Nên nêu rõ bối cảnh, thời điểm và địa phương nếu các yếu tố đó ảnh hưởng đến câu trả lời.
+
+### 10.2. Sử dụng MCP khi Local RAG chưa đủ dữ liệu
+
+1. Đặt câu hỏi như bình thường.
+2. Hệ thống ưu tiên tìm kiếm trong dữ liệu nội bộ.
+3. Nếu cần nguồn ngoài, giao diện có thể hiển thị yêu cầu cho phép truy vấn.
+4. Đọc nội dung yêu cầu và chỉ chọn đồng ý nếu muốn hệ thống gọi nguồn ngoài.
+5. Sau khi MCP trả dữ liệu, kiểm tra nguồn, nội dung và thời điểm của tài liệu được sử dụng.
+
+Nếu không đồng ý, hệ thống không được tự ý truy cập nguồn ngoài. MCP chỉ truy vấn các nguồn và công cụ đã cấu hình, không mặc định là tìm kiếm web tổng quát.
+
+### 10.3. Tải tài liệu vào domain
+
+Gateway cung cấp endpoint:
+
+- GET /api/v2/domains/
+- POST /api/v2/domains/{domain_id}/documents
+
+Các định dạng được mô tả là hỗ trợ: .txt, .md, .xlsx; giới hạn upload hiện tại là 2 MiB. Tài liệu được gắn với domain được chọn để tránh trộn dữ liệu giữa các lĩnh vực.
+
+Với Qdrant backend mặc định, collection upload có dạng domain_documents_{domain_id}. Tài liệu upload không tự động có URL công khai; hệ thống nhận diện theo filename, document ID và chunk location.
+
+### 10.4. Đọc trạng thái câu trả lời
+
+Không nên chỉ nhìn nội dung câu trả lời. Hãy kiểm tra:
+
+- Evidence có được truy xuất hay không.
+- Citation có tham chiếu tới Evidence ID hợp lệ không.
+- Verifier có thực sự chạy và đạt trạng thái passed không.
+- Câu trả lời là verified, unverified, partial hay chưa đủ dữ liệu theo response backend.
+
+Nếu hệ thống báo chưa đủ bằng chứng hoặc chưa xác minh, không sử dụng câu trả lời đó như kết luận pháp lý đã được kiểm chứng.
+
+## 11. API cơ bản
+
+Gateway mặc định chạy tại http://127.0.0.1:8002.
+
+| Method | Endpoint | Mục đích |
+|---|---|---|
+| GET | /health | Kiểm tra Gateway |
+| POST | /api/v2/legal-query | Gửi câu hỏi pháp lý |
+| GET | /api/v2/domains/ | Lấy danh sách domain |
+| POST | /api/v2/domains/{domain_id}/documents | Upload tài liệu theo domain |
+
+Ví dụ request:
+
+```json
 {
-  "query": "What documents are required for enterprise registration?",
+  "query": "Thủ tục đăng ký thành lập doanh nghiệp gồm những gì?",
   "domain_hint": "enterprise_law",
   "allow_external": false
 }
-For exact request/response schemas, see gateway_openapi.json or the running service's OpenAPI documentation.
-Tests and build
-Backend tests
-Run from the repository root:
-python -m pytest backend/tests -q
-Frontend tests and production build
-Run from the FE directory:
-npm.cmd test
-npm.cmd run build
-If Vite cannot clean an existing dist directory on Windows because of a file lock or permissions, stop the frontend dev server and try a separate output directory:
-npm.cmd run build -- --outDir build-check
-Generated directories such as FE/dist/ and FE/build-check/ should not be committed.
-Search-store migration (optional/staged)
-The PostgreSQL/Elasticsearch path is an optional staged migration. It does not replace Qdrant automatically, and API startup does not run migrations.
+```
 
-Start the development services:
-docker compose -f backend/docker-compose.yml up -d postgres elasticsearch
-Configure:
-- SEARCH_DATABASE_URL (or an explicit CATALOG_DATABASE_URL) for PostgreSQL.
-- ELASTICSEARCH_URL (default http://127.0.0.1:9200) for Elasticsearch.
-- Optional ELASTICSEARCH_API_KEY or ELASTICSEARCH_USERNAME / ELASTICSEARCH_PASSWORD credentials through environment variables.
-Search storage requires an explicitly configured PostgreSQL URL; it does not inherit the Catalog module's legacy default. Elasticsearch security is disabled only in the local Compose development setup and is bound to localhost. Use authenticated and secured settings outside local development.
+Đây là ví dụ minh họa các trường request cơ bản; schema thực tế có thể có thêm trường tùy phiên bản. Xem gateway_openapi.json hoặc OpenAPI của service đang chạy để biết schema đầy đủ.
 
-Schema changes and indexing are explicit operations:
-python -m backend.search.migrate                 # dry run
-python -m backend.search.migrate --apply         # create new search tables
-python -m backend.search.create_index            # create versioned mapping
-python -m backend.search.reindex_qdrant          # read-only inventory/dry run
-python -m backend.search.reindex_qdrant --apply  # copy validated payloads; does not alter Qdrant
-python -m backend.search.sync_outbox             # retry pending index events once
-Review dry-run domain counts and skipped/mismatched metadata before using --apply. The Elasticsearch path is selected only with SEARCH_BACKEND=elasticsearch and requires an explicitly calibrated, nonnegative ELASTICSEARCH_MIN_SCORE; do not choose an arbitrary value.
+- Gateway OpenAPI: http://127.0.0.1:8002/docs
+- Core API OpenAPI: http://127.0.0.1:8000/docs
+- Model API OpenAPI: http://127.0.0.1:8001/docs
 
-Readiness endpoint:
-GET /api/v2/search/readiness
-It probes the configured retrieval service and PostgreSQL. The migration has a matching down script, but rollback is destructive to the new search tables. Take an independent backup and obtain explicit operator approval before rollback.
-Datasets and model artifacts
-The repository documents these datasets:
-Dataset	Purpose / use
-duyet/vietnamese-legal-instruct	Legal-domain instruction fine-tuning
-tmquan/dichvucong-gov-vn	Administrative-procedure knowledge source
-data/legal_train_v3/	Prepared dataset documented for train_v3.py
-data/dichvucong_procedures/	Local administrative-procedure data
+## 12. Chạy kiểm thử
 
+### Backend
 
-The application requires the configured Qwen2.5-7B-Instruct model, LoRA V4 adapter, and relevant local datasets/services to be present before end-to-end use.
+Từ thư mục gốc:
 
-Datasets, vector indexes, model weights, and LoRA adapters may be large or subject to redistribution restrictions. Keep local-only artifacts out of Git unless the team has confirmed permission and intentionally selected a storage method such as Git LFS.
-Limitations and safety notes
-- Answer quality depends on retrieval coverage, evidence quality, and model behavior.
-- Citation checks can detect some citation/evidence problems but do not guarantee semantic correctness or legal accuracy.
-- A citation pass must not be interpreted as a semantic verification pass.
-- Depending on policy and available checks, the application may return an answered_unverified response. Such a response must not be described as verified.
-- External sources can change, become unavailable, or return incomplete information.
-- Verify important procedures, fees, deadlines, and legal requirements against current official sources.
-- The documented Cloudflare Tunnel deployment is optional; its current availability and access controls have not been verified. If used, the local PC must remain powered on and connected to the Internet.
-Academic and research prototype — not professional legal advice.
+```powershell
+.\\.venv\\Scripts\\python.exe -m pytest backend/tests -q
+```
+
+### Frontend
+
+Từ thư mục FE:
+
+```powershell
+npm test
+npm run build
+```
+
+Nếu Windows không thể xóa thư mục dist do file lock, dừng dev server rồi thử build sang thư mục khác:
+
+```powershell
+npm run build -- --outDir build-check
+```
+
+## 13. Xử lý lỗi thường gặp
+
+| Hiện tượng | Nguyên nhân cần kiểm tra |
+|---|---|
+| Frontend không kết nối Gateway | Gateway chưa chạy, sai VITE_GATEWAY_API_URL, sai port hoặc CORS. |
+| Port 8000/8001/8002 đã được sử dụng | Một tiến trình cũ đang chạy; kiểm tra tiến trình trước khi dừng. |
+| Qdrant connection error | Container chưa chạy, sai URL hoặc port 6333 chưa mở. |
+| Không tìm thấy Evidence | Collection chưa có dữ liệu, sai domain/collection hoặc retrieval gặp lỗi. |
+| MCP không được gọi | Local evidence có thể đã đủ, người dùng chưa cho phép, policy chặn hoặc MCP upstream không khả dụng. |
+| Model API không khởi động | Sai đường dẫn LoRA, thiếu model, thiếu VRAM/RAM hoặc lỗi tương thích CUDA/bitsandbytes. |
+| Citation/verifier không đạt | Evidence ID thiếu, citation không khớp, grounding chưa đạt hoặc verifier chưa hoàn tất. |
+| PostgreSQL connection error | Container/database chưa sẵn sàng hoặc cấu hình kết nối không đúng. |
+
+HTTP 200 không đồng nghĩa với truy xuất thành công hoặc câu trả lời đã được xác minh. Hãy xem log theo request/trace ID và các trường trạng thái trong response.
+
+## 14. Giới hạn và an toàn
+
+- Dự án là prototype học thuật, chưa phải hệ thống tư vấn pháp lý thương mại.
+- Chất lượng phụ thuộc dữ liệu, độ bao phủ retrieval, embedding, reranker, Evidence Builder và model.
+- Citation hợp lệ không tự động chứng minh nội dung pháp lý đúng.
+- Văn bản pháp luật có thể được sửa đổi, thay thế hoặc hết hiệu lực; cần xác minh hiệu lực tại thời điểm sử dụng.
+- MCP chỉ được sử dụng theo nguồn, công cụ và policy đã cấu hình.
+- Không đưa mật khẩu, API key, dữ liệu cá nhân hoặc hồ sơ nhạy cảm vào repository.
+- Không commit .venv/, node_modules/, file .env, chat history, model checkpoints, adapter weights hoặc build output.
+- Trước khi chia sẻ dataset hoặc model artifacts, cần kiểm tra quyền sử dụng và điều kiện phân phối.
+- Các service mặc định bind vào loopback trong môi trường local. Không expose ra Internet nếu chưa bổ sung xác thực, phân quyền, TLS và các biện pháp bảo mật phù hợp.
+
+---
+
+**DAI Legal Model — Academic Research Prototype**  
+Developed for learning and research on Vietnamese legal question answering, Retrieval-Augmented Generation (RAG), evidence grounding, citation verification and MCP-based external retrieval.
