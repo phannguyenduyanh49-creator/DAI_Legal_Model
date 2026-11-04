@@ -366,7 +366,7 @@ def post_json(url: str, payload: dict, timeout: int = 30) -> Any:
                     "[MCP HTTP]", "request_id=", request_id,
                     "source=dichvucong", "step=", step,
                     "status_code=", response.status,
-                    "attempt=", attempt, "retry_count=", attempt - 1,
+                    f"attempt={attempt} retry_count={attempt - 1}",
                     "response_chars=", len(text),
                     "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
                     file=sys.stderr, flush=True,
@@ -412,20 +412,27 @@ def post_json(url: str, payload: dict, timeout: int = 30) -> Any:
                 return parsed_json
 
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:1000]
+            # Consume the upstream body for connection cleanup, but never log
+            # or expose its contents: it may contain personal/request data.
+            body = exc.read().decode("utf-8", errors="replace")
             retryable = exc.code in transient_statuses and attempt < max_attempts
             print(
-                "[MCP HTTP ERROR]", "request_id=", request_id,
-                "source=dichvucong", "step=", step,
-                "status_code=", exc.code, "reason=", exc.reason,
-                "attempt=", attempt, "retry=", retryable,
-                "body=", body,
-                "elapsed_ms=", round((time.perf_counter() - started_at) * 1000, 2),
-                file=sys.stderr, flush=True,
+                "[MCP HTTP ERROR]",
+                f"request_id={request_id}",
+                "source=dichvucong",
+                f"step={step}",
+                f"status_code={exc.code}",
+                f"reason={exc.reason}",
+                f"attempt={attempt}",
+                f"retry={retryable}",
+                f"body_chars={len(body)}",
+                f"elapsed_ms={round((time.perf_counter() - started_at) * 1000, 2)}",
+                file=sys.stderr,
+                flush=True,
             )
             if not retryable:
                 raise DVCUpstreamError(
-                    f"DVC HTTP {exc.code}: {exc.reason}; body={body[:300]}"
+                    f"DVC HTTP {exc.code}: {exc.reason}"
                 ) from exc
             time.sleep(0.4 * (2 ** (attempt - 1)))
 

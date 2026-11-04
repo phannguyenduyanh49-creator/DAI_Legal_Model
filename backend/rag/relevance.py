@@ -18,8 +18,8 @@ STOPWORDS = frozenset({
     "do", "tuoi", "thieu", "viet", "nam", "nhieu", "bao",
 })
 
-MIN_QUERY_COVERAGE = 0.25
-MIN_MATCHED_TERMS = 1
+MIN_QUERY_COVERAGE = 0.40
+MIN_MATCHED_TERMS = 2
 
 
 def normalize_vietnamese(text: str) -> str:

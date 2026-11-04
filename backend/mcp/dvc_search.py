@@ -155,9 +155,12 @@ def extract_dvc_rows(response: Any) -> list[dict]:
         if depth > 8:
             return None
         if isinstance(value, list):
-            if all(isinstance(item, dict) for item in value):
-                if value:
-                    return value
+            if value and all(isinstance(item, dict) for item in value):
+                return value
+
+            # A nested empty list under an unknown key is not proof of a valid
+            # empty search result. Recognized row keys are handled above.
+            if not value and depth == 0:
                 empty_list_found = True
             return None
         if not isinstance(value, dict):

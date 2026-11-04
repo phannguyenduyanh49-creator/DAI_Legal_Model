@@ -1,5 +1,9 @@
 import urllib.error
 import sys
+
+import pytest
+
+from backend.mcp.dvc_search import DVCUpstreamError
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -36,27 +40,35 @@ def test_dvc_http_log_has_trace_step_status_elapsed_and_retry_count(monkeypatch,
     assert "elapsed_ms=" in output
 
 
-def test_dvc_http_error_is_logged_without_retry(monkeypatch, capsys):
+def test_dvc_http_error_retries_three_times_without_logging_body(
+    monkeypatch, capsys
+):
     monkeypatch.setenv("DAI_REQUEST_ID", "trace_legal_http_error")
+    calls = []
 
     def fail(*_args, **_kwargs):
+        calls.append(1)
         raise urllib.error.HTTPError(
             DVC_DETAIL_API, 503, "unavailable", {}, BytesIO(b"details")
         )
 
     monkeypatch.setattr("mcp_server.urllib.request.urlopen", fail)
-    try:
+    monkeypatch.setattr("mcp_server.time.sleep", lambda *_args: None)
+
+    with pytest.raises(DVCUpstreamError, match="DVC HTTP 503"):
         post_json(DVC_DETAIL_API, {"id": "safe-id"})
-    except urllib.error.HTTPError:
-        pass
-    else:
-        raise AssertionError("Expected upstream HTTPError")
 
     output = capsys.readouterr().err
-    assert "request_id= trace_legal_http_error" in output
-    assert "step= detail" in output
-    assert "status_code= 503" in output
-    assert "attempt=1 retry_count=0" in output
+    assert len(calls) == 3
+    assert "request_id=trace_legal_http_error" in output
+    assert "step=detail" in output
+    assert "status_code=503" in output
+    assert "attempt=1" in output
+    assert "attempt=2" in output
+    assert "attempt=3" in output
+    assert "retry=True" in output
+    assert "retry=False" in output
+    assert "body_chars=7" in output
     assert "details" not in output
 
 

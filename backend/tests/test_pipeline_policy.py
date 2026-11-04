@@ -1,3 +1,4 @@
+
 from backend.evidence.schemas import Evidence
 from backend.evidence.builder import EvidenceBuilder
 from backend.rag.pipeline_policy import (
@@ -63,7 +64,7 @@ def test_policy_denial_prevents_permission_prompt_and_mcp_fallback():
         enough_data=False,
         allow_external=True,
         mcp_tool_allowed=False,
-    ) == "local"
+    ) == "blocked"
 
 
 def test_insufficient_local_data_uses_external_only_after_opt_in():
@@ -86,12 +87,15 @@ def test_final_mcp_evidence_can_satisfy_generic_full_text_but_not_missing_struct
         content="Nội dung chi tiết thủ tục từ cổng dịch vụ công.",
         score=1.0,
     )
+
     assert check_evidence_sufficiency("Thủ tục này thế nào?", [evidence]) == (
         True, ["full_text"], []
     )
+
     enough, required, missing = check_evidence_sufficiency(
         "Hồ sơ cần giấy tờ gì?", [evidence]
     )
+
     assert enough is False
     assert required == ["profile_components"]
     assert missing == ["profile_components"]
