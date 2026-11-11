@@ -91,6 +91,12 @@ class EvidenceBuilder:
         # 4. Limit
         evidences = evidences[: self.max_evidences]
 
+        # 5. Deterministic short ID assignment within request bundle
+        for i, ev in enumerate(evidences, 1):
+            short_id = f"E{i}"
+            ev.metadata["short_id"] = short_id
+            ev.metadata.setdefault("canonical_id", ev.evidence_id)
+
         detected_sources = self._get_sources(
             evidences
         )
@@ -114,6 +120,8 @@ class EvidenceBuilder:
                 "ranking": "source_score",
                 "min_score": self.min_score,
                 "max_evidences": self.max_evidences,
+                "short_id_map": {f"E{i}": ev.evidence_id for i, ev in enumerate(evidences, 1)},
+                "id_to_short": {ev.evidence_id: f"E{i}" for i, ev in enumerate(evidences, 1)},
             },
         )
 

@@ -104,6 +104,26 @@ def collect_records(client: QdrantClient):
                     continue
                 if inferred_domain and payload_domain and inferred_domain != payload_domain:
                     counts[f"remapped_domain:{payload_domain}:{inferred_domain}"] += 1
+                    if payload.get("source_type") == "domain_upload":
+                        document_id = str(payload.get("document_id") or "")
+                        source_id = str(payload.get("source_id") or "")
+                        chunk_index = payload.get("chunk_index")
+                        old_evidence_id = payload.get("evidence_id")
+                        if (
+                            not document_id
+                            or source_id != document_id
+                            or not isinstance(chunk_index, int)
+                            or chunk_index < 1
+                            or old_evidence_id != (
+                                f"domain:{payload_domain}:{document_id}:{chunk_index}"
+                            )
+                        ):
+                            counts["unrepairable_upload_identity"] += 1
+                            continue
+                        payload["evidence_id"] = (
+                            f"domain:{target_domain}:{document_id}:{chunk_index}"
+                        )
+                        counts[f"rewritten_evidence_id:{target_domain}"] += 1
                 elif not inferred_domain and payload_domain not in expected_domains:
                     counts[f"out_of_scope_domain:{payload_domain or 'missing'}"] += 1
                     continue

@@ -644,6 +644,8 @@ def test_prompt_contains_exact_allowed_ids_and_citation_rule():
     assert "REQUIRED CITATION FORMAT" in prompt
     assert "on the same line" in prompt
     assert "never put a citation marker on its own line" in prompt
+    assert "Before writing the first factual sentence" in prompt
+    assert "Do not postpone citations to a source list" in prompt
 
 
 def test_prompt_treats_retrieved_evidence_as_untrusted_quoted_data():
@@ -673,6 +675,8 @@ def test_prompt_never_allows_an_id_whose_evidence_section_was_not_included():
 
     assert "[Evidence ID: rag:included]" in prompt
     assert "Allowed Evidence IDs: rag:included" in prompt
+    assert "Example (replace <exact allowed ID>" in prompt
+    assert "Supported fact. [Evidence ID: <exact allowed ID>]" in prompt
     assert "rag:omitted" not in prompt
     assert "there is no fixed sentence or bullet limit" in prompt
     assert "Không rút gọn đến mức bỏ mất ý được hỏi." in prompt
@@ -757,6 +761,7 @@ def test_model_api_request_preserves_assembled_prompt_and_trace_headers():
             captured["body"] = request.read().decode("utf-8")
             captured["request_id"] = request.headers["X-Request-ID"]
             captured["citation_attempt"] = request.headers["X-Citation-Attempt"]
+            captured["deadline"] = request.headers["X-Request-Deadline"]
             return httpx.Response(200, json={"success": True, "answer": "ok"})
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -766,6 +771,7 @@ def test_model_api_request_preserves_assembled_prompt_and_trace_headers():
                 prompt=prompt,
                 request_id="trace_test_123",
                 citation_attempt=2,
+                deadline=1234567890.12345,
             )
             return response.json()
 
@@ -778,6 +784,7 @@ def test_model_api_request_preserves_assembled_prompt_and_trace_headers():
     }
     assert captured["request_id"] == "trace_test_123"
     assert captured["citation_attempt"] == "2"
+    assert captured["deadline"] == "1234567890.1235"
 
 
 def test_generation_retries_for_citation_then_withholds_without_grounding():
@@ -805,6 +812,7 @@ def test_generation_retries_for_citation_then_withholds_without_grounding():
             generate=generate,
             verifier=Verifier(),
             max_attempts=99,
+            retry_when_all_citations_missing=True,
         )
     )
 
@@ -927,6 +935,7 @@ def test_citation_retry_uses_only_evidence_in_the_prompt_contract():
         evidence_bundle=included_bundle,
         generate=generate,
         verifier=Verifier(),
+        retry_when_all_citations_missing=True,
     ))
 
     assert len(prompts) == 2
@@ -956,6 +965,7 @@ def test_citation_attempt_logger_matches_retry_callback_signature(capsys):
             evidence_bundle=make_bundle(),
             generate=generate,
             verifier=Verifier(),
+            retry_when_all_citations_missing=True,
             on_attempt=make_citation_attempt_logger(
                 "trace_test",
                 lambda value: value[:200],
@@ -1001,7 +1011,7 @@ def test_generation_stops_after_two_invalid_or_unexpected_responses():
     assert result.failure_reason_code == "MODEL_API_EMPTY_RESPONSE"
 
 
-def test_retry_still_withholds_answer_when_model_omits_citations_again():
+def test_missing_citations_fail_fast_without_a_redundant_model_retry():
     calls = []
 
     async def generate(_prompt, attempt):
@@ -1015,11 +1025,11 @@ def test_retry_still_withholds_answer_when_model_omits_citations_again():
         verifier=Verifier(),
     ))
 
-    assert calls == [1, 2]
+    assert calls == [1]
     assert result.answer is None
     assert result.failure_reason_code == "CITATION_MISSING"
     assert result.reference_answer == "A legal claim without a citation."
-    assert [item["claim_count"] for item in result.attempt_diagnostics] == [1, 1]
+    assert [item["claim_count"] for item in result.attempt_diagnostics] == [1]
     assert all(item["claims_with_citation"] == 0 for item in result.attempt_diagnostics)
 
 
@@ -1083,6 +1093,33 @@ def test_generation_does_not_retry_transport_failure():
     assert result.failure_reason_code == "MODEL_API_REQUEST_FAILED"
     assert result.answer is None
     assert result.answer is None
+
+
+def test_model_deadline_http_504_cannot_become_an_answer_or_trigger_citation_retry():
+    attempts = []
+
+    async def generate(current_prompt, attempt):
+        attempts.append(attempt)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(504, json={"detail": {"code": "MODEL_DEADLINE_EXPIRED"}})
+        )) as client:
+            response = await post_model_generation(
+                client, "http://model.test/generate", current_prompt,
+                "trace_deadline_test", attempt, deadline=1234567890.0,
+            )
+            return response.json()
+
+    result = asyncio.run(generate_with_citation_retry(
+        prompt="assembled prompt with Evidence",
+        evidence_bundle=make_bundle(),
+        generate=generate,
+        verifier=Verifier(),
+    ))
+    assert attempts == [1]
+    assert result.answer is None
+    assert result.reference_answer is None
+    assert result.verification.passed is False
+    assert result.generation_error == "HTTPStatusError"
 
 
 def test_generation_failure_stops_at_configured_attempt_limit():

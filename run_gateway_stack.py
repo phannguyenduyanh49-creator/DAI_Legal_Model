@@ -28,6 +28,14 @@ def build_child_environment(parent_environment: dict[str, str] | None = None) ->
 
 def main() -> int:
     env = build_child_environment()
+    # Fail before loading Qwen if hybrid's source-of-truth configuration is absent.
+    from backend.search.config import resolve_search_config
+    backend, _ = resolve_search_config(env)
+    if backend in {"hybrid", "elasticsearch"} and not (
+        env.get("SEARCH_DATABASE_URL") or env.get("CATALOG_DATABASE_URL")
+    ):
+        print("Set SEARCH_DATABASE_URL (or CATALOG_DATABASE_URL) before starting PostgreSQL-backed search.", flush=True)
+        return 1
 
     processes: list[tuple[str, subprocess.Popen]] = []
     try:

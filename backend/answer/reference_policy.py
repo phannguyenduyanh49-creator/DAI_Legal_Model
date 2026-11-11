@@ -9,6 +9,9 @@ def reference_answer_failure_reason(
     answer: str,
     pipeline: dict[str, Any],
     verifier_status: str,
+    *,
+    domain_id: str | None = None,
+    policy_mode: str | None = None,
 ) -> str | None:
     """Return why an unverified answer cannot be shown as a reference answer.
 
@@ -65,6 +68,12 @@ def reference_answer_failure_reason(
     # explicitly unverified reference when the exact supplied Evidence bundle
     # passed its independent integrity checks. No source link is trusted here.
     citation_status = pipeline.get("citation_verification")
+    if (
+        citation_status != "passed"
+        and domain_id in {"legal_ai", "administrative_law"}
+        and policy_mode == "STRICT"
+    ):
+        return "STRICT_LEGAL_CITATION_INTEGRITY_NOT_PASSED"
     if partial_evidence:
         if citation_status != "passed":
             return "PARTIAL_ANSWER_CITATION_INTEGRITY_NOT_PASSED"

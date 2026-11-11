@@ -45,3 +45,5 @@ backend/core_gateway.zip
 .ruff_cache/
 /FE/build-check/
 /FE/dist/
+# Local, potentially sensitive migration snapshots
+/migration_backups/

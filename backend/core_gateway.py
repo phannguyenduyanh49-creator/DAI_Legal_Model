@@ -854,9 +854,14 @@ class CoreAPIGateway:
                     "cited_evidence_ids",
                     "model_processing_time_ms",
                     "model_api_elapsed_ms",
+                    "model_input_tokens",
+                    "model_output_tokens",
+                    "model_finish_reason",
+                    "model_prompt_preparation_ms",
                     "stage_durations_ms",
                     "retrieved_count",
                     "reranked_count",
+                    "retrieval_diagnostics",
                     "failure_stage",
                     "failure_reason_code",
                     "exception_type",
@@ -949,6 +954,8 @@ class CoreAPIGateway:
                         legacy_result.answer,
                         legacy_pipeline,
                         legacy_result.verifier_status,
+                        domain_id=registry_domain_id,
+                        policy_mode=policy_mode,
                     )
                 )
                 answer_is_unverified_reference = (

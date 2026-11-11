@@ -23,6 +23,14 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
         "retrieval": "completed",
         "reranking": "completed",
         "evidence_builder": "completed",
+        "retrieval_diagnostics": {
+            "configured_backend": "hybrid",
+            "branches": {
+                "qdrant": {"status": "completed", "candidate_count": 10},
+                "elasticsearch": {"status": "completed", "candidate_count": 10},
+            },
+            "rrf": {"status": "completed", "fused_candidate_count": 8},
+        },
         "enough_data": "insufficient",
         "required_fields": ["profile_components", "fees"],
         "missing_fields": ["fees"],
@@ -57,6 +65,10 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
         "cited_evidence_ids": [evidence_id],
         "model_processing_time_ms": 45.5,
         "model_api_elapsed_ms": 50.0,
+        "model_input_tokens": 1200,
+        "model_output_tokens": 256,
+        "model_finish_reason": "max_new_tokens",
+        "model_prompt_preparation_ms": 4.25,
         "stage_status": {
             "retrieval": "completed",
             "evidence_builder": "completed",
@@ -117,6 +129,7 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
     assert data["pipeline_execution"]["confidence_status"] == "not_verified"
     assert answer not in data["answer"]
     assert data["pipeline_execution"]["evidence_builder"] == "completed"
+    assert data["pipeline_execution"]["retrieval_diagnostics"]["rrf"]["fused_candidate_count"] == 8
     assert data["pipeline_execution"]["enough_data"] == "insufficient"
     assert data["pipeline_execution"]["missing_fields"] == ["fees"]
     assert data["pipeline_execution"]["evidence_ids"] == [evidence_id]
@@ -125,6 +138,10 @@ def test_gateway_withholds_answer_when_confidence_and_grounding_are_unverified(c
     assert data["pipeline_execution"]["citation_attempt_diagnostics"][0]["claim_count"] == 2
     assert data["pipeline_execution"]["verifier_scope"] == "citation_integrity_only"
     assert data["pipeline_execution"]["model_processing_time_ms"] == 45.5
+    assert data["pipeline_execution"]["model_input_tokens"] == 1200
+    assert data["pipeline_execution"]["model_output_tokens"] == 256
+    assert data["pipeline_execution"]["model_finish_reason"] == "max_new_tokens"
+    assert data["pipeline_execution"]["model_prompt_preparation_ms"] == 4.25
     assert data["pipeline_execution"]["stage_status"]["retrieval"] == "completed"
     assert data["pipeline_execution"]["stage_durations_ms"]["retrieval"] == 18.25
     assert data["processing_time_ms"] >= 0
@@ -244,7 +261,17 @@ def test_gateway_returns_clearly_labeled_reference_answer_when_minimum_safeguard
     assert execution["core_gateway_outcome_match"] is True
 
 
-def test_gateway_returns_answer_unverified_when_citation_is_missing_but_evidence_is_valid():
+@pytest.mark.parametrize(
+    ("domain_hint", "expected_outcome"),
+    [
+        (None, "answered_unverified"),
+        ("legal_ai", "verification_failed"),
+        ("administrative_law", "verification_failed"),
+    ],
+)
+def test_gateway_returns_answer_unverified_when_citation_is_missing_but_evidence_is_valid(
+    domain_hint, expected_outcome
+):
     answer = "The material describes the procedure, but the model omitted its citation."
     pipeline = {
         "retrieval": "completed", "reranking": "completed",
@@ -282,13 +309,20 @@ def test_gateway_returns_answer_unverified_when_citation_is_missing_but_evidence
         async def post(self, *_args, **_kwargs): return FakeResponse()
 
     with patch.object(core_gateway.httpx, "AsyncClient", FakeAsyncClient), TestClient(core_gateway.app) as client:
-        response = client.post("/api/v2/legal-query", json={"query": "Question requiring evidence?"})
+        response = client.post("/api/v2/legal-query", json={
+            "query": "Question requiring evidence?",
+            **({"domain_hint": domain_hint} if domain_hint else {}),
+        })
 
     data = response.json()
     assert response.status_code == 200
-    assert data["outcome"] == "answered_unverified"
-    assert data["answer"] == answer
-    assert data["pipeline_execution"]["answer_withheld"] is False
+    assert data["outcome"] == expected_outcome
+    if domain_hint:
+        assert data["answer"] != answer
+        assert data["pipeline_execution"]["answer_withheld"] is True
+    else:
+        assert data["answer"] == answer
+        assert data["pipeline_execution"]["answer_withheld"] is False
     assert data["pipeline_execution"]["evidence_integrity_status"] == "passed"
     assert data["pipeline_execution"]["citation_verification"] == "failed"
 

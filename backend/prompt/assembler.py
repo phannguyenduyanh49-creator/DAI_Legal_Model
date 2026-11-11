@@ -76,13 +76,28 @@ class PromptAssembler:
         allowed_ids = format_allowed_evidence_ids(
             item.evidence_id for item in included_evidences
         )
+        citation_example = (
+            "Example (replace <exact allowed ID> only with one ID from the list): "
+            "Supported fact. [Evidence ID: <exact allowed ID>]\n"
+            if included_evidences
+            else ""
+        )
         return (
             prompt
             + ("\n=== DOMAIN-SPECIFIC INSTRUCTIONS ===\n" + domain_prompt + "\n" if domain_prompt else "")
             + "\n=== REQUIRED CITATION FORMAT ===\n"
             + CITATION_RULES
             + "\n"
+            + citation_example
+            + "\n"
             + f"Allowed Evidence IDs: {allowed_ids}\n"
+            + (
+                "Before writing the first factual sentence, choose the exact Evidence ID "
+                "that supports it and place its citation at the end of that sentence. "
+                "Do this for every factual sentence; if no listed Evidence supports a "
+                "sentence, omit that sentence. Do not postpone citations to a source list.\n"
+                if included_evidences else ""
+            )
         )
 
     def included_evidences(self, evidence_bundle: EvidenceBundle):

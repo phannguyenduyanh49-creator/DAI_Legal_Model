@@ -229,3 +229,46 @@ def structure_answer_with_explicit_evidence(answer: str) -> StructuredAnswer:
         claims=claims,
         metadata={"citation_parse_errors": sorted(set(parse_errors))},
     )
+
+
+
+def repair_citation_formatting(
+    answer: str,
+    allowed_evidence_ids: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Deterministically repair minor bracket or label typos on existing citation markers.
+
+    Strict invariant: Does NOT invent citations for claims that lack citation tokens.
+    """
+    if not isinstance(answer, str) or not answer.strip():
+        return answer
+
+    repaired = answer
+
+    # 1. Normalize [Evidence: <id>] or [Evidence-ID: <id>] -> [Evidence ID: <id>]
+    repaired = re.sub(
+        r"\[Evidence(?:-ID|:)?\s*:\s*([^\]\r\n]+?)\s*\]",
+        r"[Evidence ID: \1]",
+        repaired,
+        flags=re.IGNORECASE,
+    )
+    # Also handle [Evidence <id>]
+    repaired = re.sub(
+        r"\[Evidence\s+(?!ID:)([^\]\r\n]+?)\s*\]",
+        r"[Evidence ID: \1]",
+        repaired,
+        flags=re.IGNORECASE,
+    )
+
+    # 2. Fix missing closing bracket before trailing period, punctuation, newline or EOS
+    if allowed_evidence_ids:
+        for eid in allowed_evidence_ids:
+            if not eid:
+                continue
+            pattern = re.compile(
+                r"\[Evidence ID:\s*" + re.escape(eid) + r"\s*(?=[.\n!?]|$)(?!\])",
+                flags=re.IGNORECASE,
+            )
+            repaired = pattern.sub(f"[Evidence ID: {eid}]", repaired)
+
+    return repaired

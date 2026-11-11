@@ -1,6 +1,77 @@
+import hashlib
+import re
 from typing import Any
 
 from backend.evidence.schemas import Evidence
+
+
+def build_concise_evidence_id(
+    item: dict[str, Any],
+    raw_id: str | None = None,
+    source_type: str = "rag",
+) -> tuple[str, str]:
+    """Generate a stable, concise, collision-safe Evidence ID while preserving raw identity.
+
+    Returns:
+        (concise_evidence_id, original_raw_id)
+    """
+    procedure_name = str(item.get("title") or item.get("procedure_name") or "").strip()
+    content = str(item.get("text") or item.get("full_text") or "").strip()
+
+    if not raw_id and source_type != "domain_upload":
+        raw_id = item.get("formality_id") or item.get("code") or procedure_name
+    original_raw_id = str(raw_id or "").strip()
+
+    # Uploaded documents already carry an externally assigned evidence
+    # identity (for example ``domain:tourism:<document>:<chunk>``). Preserve
+    # that identity exactly when supplied; deriving a hash here would sever
+    # the link back to the indexed point and make the Evidence provenance
+    # contract fail. If it is absent, return an empty ID so the Evidence
+    # builder can reject the record instead of fabricating an identity.
+    if source_type == "domain_upload":
+        return original_raw_id, original_raw_id
+
+    # 1. If raw_id is already a concise, valid prefixed identifier without whitespace, keep it
+    if (
+        original_raw_id.startswith(("rag:", "domain:", "catalog:", "mcp:"))
+        and len(original_raw_id) <= 64
+        and not any(c.isspace() for c in original_raw_id)
+    ):
+        return original_raw_id, original_raw_id
+
+    # 2. Check for formalityId in source_url (DVC procedures)
+    source_url = str(item.get("source_url") or "").strip()
+    url_formality_match = re.search(r"formalityId=([0-9a-fA-F-]+)", source_url)
+    formality_id = str(
+        item.get("formality_id")
+        or (url_formality_match.group(1) if url_formality_match else "")
+    ).strip()
+
+    code = str(item.get("code") or "").strip()
+    point_id = str(item.get("point_id") or item.get("record_id") or "").strip()
+
+    # 3. Prefer official code if concise and clean (e.g. 1.002847)
+    if code and len(code) <= 32 and not any(c.isspace() for c in code):
+        clean_code = re.sub(r"[^\w.-]", "_", code)
+        return f"rag:code_{clean_code}", original_raw_id
+
+    # 4. Prefer formality_id if available (UUID or slug)
+    if formality_id and len(formality_id) <= 40 and not any(c.isspace() for c in formality_id):
+        return f"rag:dvc_{formality_id[:18]}", original_raw_id
+
+    # 5. Check if raw_id is non-empty, short, and has no whitespace
+    if (
+        original_raw_id
+        and len(original_raw_id) <= 32
+        and not any(c.isspace() for c in original_raw_id)
+        and not original_raw_id.startswith(("rag:", "domain:", "catalog:", "mcp:"))
+    ):
+        return f"rag:{original_raw_id}", original_raw_id
+
+    # 6. Fallback: Deterministic SHA-256 hash of procedure_name/content to ensure stability and collision safety
+    anchor_text = procedure_name or content or original_raw_id or point_id or "unknown"
+    digest = hashlib.sha256(anchor_text.encode("utf-8")).hexdigest()[:12]
+    return f"rag:doc_{digest}", original_raw_id
 
 
 def rag_result_to_evidence(
@@ -18,13 +89,8 @@ def rag_result_to_evidence(
     raw_id = item.get("evidence_id")
     if not raw_id and source_type != "domain_upload":
         raw_id = item.get("formality_id") or item.get("code") or procedure_name
-    raw_id = str(raw_id or "").strip()
 
-    evidence_id = (
-        raw_id if raw_id.startswith(("rag:", "domain:", "catalog:", "mcp:"))
-        else f"rag:{raw_id}" if raw_id
-        else ""
-    )
+    evidence_id, original_raw_id = build_concise_evidence_id(item, raw_id, source_type)
 
     record_fields = item.get("record_fields")
     if not isinstance(record_fields, dict):
@@ -43,7 +109,14 @@ def rag_result_to_evidence(
         "fees": item.get("fees"),
         "legal_basis": item.get("legal_basis"),
         "executing_agencies": item.get("executing_agencies"),
+        "canonical_id": evidence_id,
+        "original_procedure_name": procedure_name,
     })
+    if original_raw_id:
+        metadata["original_evidence_id"] = original_raw_id
+    if item.get("retrieval_provenance"):
+        metadata["retrieval_provenance"] = item["retrieval_provenance"]
+
     for key in (
         "domain_id", "document_id", "record_id", "chunk_index", "point_id",
         "sheet_name", "row_number", "record_name",

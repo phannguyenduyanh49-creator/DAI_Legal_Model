@@ -36,6 +36,7 @@ def _retry_prompt(
     prompt: str,
     allowed_evidence_ids: tuple[str, ...],
     previous_answer: str,
+    failure_reason_code: str | None = None,
 ) -> str:
     allowed_ids = format_allowed_evidence_ids(allowed_evidence_ids)
     return (
@@ -43,6 +44,9 @@ def _retry_prompt(
         + "\n\n=== PREVIOUS ANSWER DRAFT (UNTRUSTED JSON STRING) ===\n"
         + json.dumps(previous_answer, ensure_ascii=False)
         + "\n\n=== CITATION REPAIR ===\n"
+        + "The previous draft failed citation validation with reason: "
+        + str(failure_reason_code or "CITATION_VERIFICATION_NOT_PASSED")
+        + ". Repair only the citation linkage; do not add unsupported facts. "
         + "Use the previous answer as a draft and make the smallest changes needed "
         + "to repair citation linkage or citation formatting. Preserve the meaning, "
         + "scope, conditions, dates, and supported details of claims wherever possible. "
@@ -84,6 +88,9 @@ async def generate_with_citation_retry(
     max_attempts: int = MAX_CITATION_ATTEMPTS,
     on_attempt: AttemptCallback | None = None,
     raw_answer_debug_enabled: bool = False,
+    deadline: float | None = None,
+    min_retry_budget_seconds: float = 25.0,
+    retry_when_all_citations_missing: bool = False,
 ) -> CitationGenerationResult:
     """Retry only a generated response whose citation integrity can be repaired.
 
@@ -183,6 +190,30 @@ async def generate_with_citation_retry(
         last_generation_error = None
         last_structured = structure_answer_with_explicit_evidence(answer)
         last_verification = verifier.verify(last_structured, evidence_bundle)
+
+        # Fast-path deterministic citation repair if raw answer had minor formatting defects
+        if not last_verification.citation_integrity_passed and answer.strip():
+            from backend.answer.citations import repair_citation_formatting
+            all_known_ids = allowed_evidence_ids
+            if isinstance(evidence_bundle.metadata, dict):
+                short_map = evidence_bundle.metadata.get("short_id_map", {})
+                if isinstance(short_map, dict):
+                    all_known_ids = allowed_evidence_ids + tuple(short_map.keys())
+            repaired_answer = repair_citation_formatting(answer, all_known_ids)
+            if repaired_answer != answer:
+                repaired_structured = structure_answer_with_explicit_evidence(repaired_answer)
+                repaired_verification = verifier.verify(repaired_structured, evidence_bundle)
+                if (
+                    repaired_verification.passed
+                    or (
+                        repaired_verification.citation_integrity_passed
+                        and not last_verification.citation_integrity_passed
+                    )
+                ):
+                    answer = repaired_answer
+                    last_structured = repaired_structured
+                    last_verification = repaired_verification
+
         attempt_debug = {
             "attempt": attempt,
             "generation_elapsed_ms": round(
@@ -252,18 +283,34 @@ async def generate_with_citation_retry(
             break
 
         failure_reason_code = _citation_failure_code(last_structured, last_verification)
+
+        remaining_budget = (deadline - time.time()) if deadline is not None else 180.0
+        can_retry_within_budget = remaining_budget >= min_retry_budget_seconds
+
         if (
             attempt < attempts_limit
             and allowed_evidence_ids
             and last_verification.evidence_integrity_passed
-            and failure_reason_code in _REPAIRABLE_CITATION_FAILURES
+            and (
+                failure_reason_code in _REPAIRABLE_CITATION_FAILURES
+                and (
+                    failure_reason_code != "CITATION_MISSING"
+                    or retry_when_all_citations_missing
+                    or any(claim.evidence_ids for claim in last_structured.claims)
+                )
+            )
+            and can_retry_within_budget
         ):
             current_prompt = _retry_prompt(
                 prompt,
                 allowed_evidence_ids,
                 previous_answer=answer,
+                failure_reason_code=failure_reason_code,
             )
         else:
+            if not can_retry_within_budget and attempt < attempts_limit and failure_reason_code in _REPAIRABLE_CITATION_FAILURES:
+                diagnostics[-1]["retry_skipped_due_to_deadline"] = True
+                diagnostics[-1]["remaining_budget_seconds"] = round(remaining_budget, 2)
             break
 
     return CitationGenerationResult(
@@ -271,6 +318,8 @@ async def generate_with_citation_retry(
         reference_answer=(
             last_structured.answer
             if (
+                bool(last_structured.answer.strip())
+                and
                 last_verification.evidence_integrity_passed
                 and last_verification.confidence_status not in ("failed", "invalid_score")
                 and last_verification.claim_grounding_status not in (

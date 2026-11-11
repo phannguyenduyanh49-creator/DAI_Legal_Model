@@ -120,11 +120,17 @@ class Verifier:
                     )
                 ):
                     evidence_integrity_passed = False
-        evidence_map = {
-            evidence.evidence_id: evidence
-            for evidence in evidence_bundle.evidences
-            if evidence_id_counts[evidence.evidence_id] == 1
-        }
+        evidence_map = {}
+        for evidence in evidence_bundle.evidences:
+            if evidence_id_counts[evidence.evidence_id] == 1:
+                evidence_map[evidence.evidence_id] = evidence
+                if isinstance(evidence.metadata, dict):
+                    short_id = evidence.metadata.get("short_id")
+                    if short_id and short_id not in evidence_map:
+                        evidence_map[short_id] = evidence
+                    canonical_id = evidence.metadata.get("canonical_id")
+                    if canonical_id and canonical_id not in evidence_map:
+                        evidence_map[canonical_id] = evidence
         checked_claims = len(answer.claims)
         linked_claims = 0
         claim_results: list[dict] = []

@@ -1,12 +1,43 @@
 from types import SimpleNamespace
+from copy import deepcopy
 
 import pytest
 
 from backend.model_runtime import (
+    DeadlineStoppingCriteria,
+    generation_finish_reason,
+    monotonic_request_deadline,
     configured_model_device,
     pytorch_cuda_memory_snapshot,
     pytorch_cuda_peak_snapshot,
 )
+
+
+def test_generation_finish_reason_distinguishes_eos_from_output_cap():
+    assert generation_finish_reason(2, 37, 256, 2) == "eos"
+    assert generation_finish_reason(7, 256, 256, [2, 3]) == "max_new_tokens"
+    assert generation_finish_reason(None, 0, 256, 2) == "empty"
+    assert generation_finish_reason(7, 4, 256, 2) == "other"
+
+
+def test_deadline_stopping_is_request_scoped_and_checks_each_generation_step():
+    now = [10.0]
+    first = DeadlineStoppingCriteria(12.0, clock=lambda: now[0])
+    second = DeadlineStoppingCriteria(20.0, clock=lambda: now[0])
+    assert first(None, None) is False
+    now[0] = 12.0
+    assert first(None, None) is True
+    assert first.expired is True
+    assert second(None, None) is False
+    assert deepcopy(first) is first
+
+
+def test_request_deadline_conversion_rejects_invalid_values():
+    assert monotonic_request_deadline(110.0, now_epoch=100.0, now_monotonic=50.0) == 60.0
+    assert monotonic_request_deadline(90.0, now_epoch=100.0, now_monotonic=50.0) == 50.0
+    for invalid in (float("nan"), float("inf"), True):
+        with pytest.raises(ValueError):
+            monotonic_request_deadline(invalid)
 
 
 def test_device_defaults_preserve_existing_cuda_placement():

@@ -23,6 +23,7 @@ def point(point_id, *, sheet, domain, record_id):
             "source_id": "workbook-id",
             "chunk_index": 1,
             "source_type": "domain_upload",
+            "evidence_id": "domain:healthcare:workbook-id:1",
             "title": "Healthcare_Education_RAG_Datasets_100_each.xlsx",
             "sheet_name": sheet,
             "record_fields": {"record_id": record_id},
@@ -47,7 +48,25 @@ def test_dry_run_remaps_education_worksheet_and_excludes_readme(monkeypatch):
 
     assert [record.domain_id for record in records] == ["healthcare", "education"]
     assert counts["remapped_domain:healthcare:education"] == 1
+    assert counts["rewritten_evidence_id:education"] == 1
     assert counts["excluded_instruction_sheet"] == 1
+    assert records[1].to_payload()["evidence_id"] == "domain:education:workbook-id:1"
+    assert client.points[1].payload["evidence_id"] == "domain:healthcare:workbook-id:1"
+
+
+def test_dry_run_skips_ambiguous_upload_identity_instead_of_inventing_id(monkeypatch):
+    monkeypatch.setattr(
+        reindex,
+        "_expected_domains_by_collection",
+        lambda: {"domain_documents_healthcare": {"healthcare"}},
+    )
+    bad = point("edu-1", sheet="Giao_duc_100", domain="healthcare", record_id="EDU-1")
+    bad.payload["evidence_id"] = "domain:healthcare:another-document:1"
+
+    records, counts = reindex.collect_records(FakeQdrant([bad]))
+
+    assert records == []
+    assert counts["unrepairable_upload_identity"] == 1
 
 
 def test_dry_run_does_not_guess_domain_for_shared_legacy_collection(monkeypatch):

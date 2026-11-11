@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import math
 
 
 STOPWORDS = frozenset({
@@ -15,6 +16,17 @@ STOPWORDS = frozenset({
 })
 MIN_QUERY_COVERAGE = 0.60
 MIN_MATCHED_TERMS = 2
+
+
+def finite_retrieval_score(value: object) -> float | None:
+    """Reject malformed/non-finite backend scores before threshold comparisons."""
+    if isinstance(value, bool):
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return score if math.isfinite(score) else None
 
 
 def normalize_vietnamese(text: str) -> str:

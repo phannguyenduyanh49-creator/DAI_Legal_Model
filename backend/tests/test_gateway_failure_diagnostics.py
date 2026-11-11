@@ -290,6 +290,33 @@ def test_reference_answer_policy_can_show_generated_text_when_only_citations_fai
     assert _business_outcome(result, False, True) == "answered_unverified"
 
 
+@pytest.mark.parametrize("domain_id", ["legal_ai", "administrative_law"])
+def test_strict_legal_reference_policy_rejects_uncited_claims(domain_id):
+    result = unverified_reference_result(
+        citation_verification="failed",
+        failure_stage="verifier",
+        failure_reason_code="CITATION_MISSING",
+        cited_evidence_ids=[],
+        claim_verification_results=[{
+            "claim": "A legal fact without a citation.",
+            "evidence_ids": [],
+            "passed": False,
+            "citation_integrity_status": "failed",
+            "claim_grounding_status": "not_evaluated",
+            "reasons": ["Claim has no evidence: A legal fact without a citation."],
+        }],
+    )
+    result.answer = "A legal fact without a citation."
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "failed",
+        domain_id=domain_id, policy_mode="STRICT",
+    ) == "STRICT_LEGAL_CITATION_INTEGRITY_NOT_PASSED"
+    assert reference_answer_failure_reason(
+        result.answer, result.pipeline, "failed",
+        domain_id=domain_id, policy_mode="FRIENDLY",
+    ) is None
+
+
 def test_reference_answer_policy_preserves_prose_but_does_not_trust_unknown_source_id():
     result = unverified_reference_result(
         citation_verification="failed",

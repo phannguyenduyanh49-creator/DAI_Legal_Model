@@ -15,6 +15,7 @@ from backend.domain_documents import (
 from backend.domain_registry import registry_service
 from backend.search.service import DomainSearchService
 from backend.search.config import resolve_search_config
+from backend.search.candidate import candidate_name
 from backend.chat_session import (
     NEGATIVE_REPLIES,
     find_pending_external_question,
@@ -47,13 +48,17 @@ from backend.model_runtime import (
     pytorch_cuda_memory_snapshot,
 )
 from backend.rag.adapter import rag_results_to_evidence
+from backend.rag.candidate_diagnostics import (
+    retrieval_candidate_summary,
+    reranker_candidate_summary,
+)
 from backend.rag.structured_retrieval import get_structured_retrieval_strategy
 from backend.rag.diagnostics import (
     attach_retrieval_failure_telemetry,
     classify_retrieval_result,
     retrieval_exception_details,
 )
-from backend.rag.relevance import procedure_relevance
+from backend.rag.relevance import procedure_relevance, finite_retrieval_score
 from backend.rag.query_intent import retrieval_breadth, should_use_exact_match_shortcut
 from backend.rag.reranker_diagnostics import (
     build_reranker_document_text,
@@ -341,7 +346,7 @@ try:
     SEARCH_BACKEND, ELASTICSEARCH_MIN_SCORE = resolve_search_config()
 except ValueError as exc:
     raise RuntimeError(str(exc)) from exc
-search_store = DomainSearchService() if SEARCH_BACKEND == "elasticsearch" else None
+search_store = DomainSearchService() if SEARCH_BACKEND in {"elasticsearch", "hybrid"} else None
 
 
 # =========================================================
@@ -459,9 +464,8 @@ def find_exact_local_procedures(question: str, domain_id: str = "legal_ai"):
     matches = []
     if SEARCH_BACKEND == "elasticsearch":
         exact_source_items = [
-            {"id": hit.id, "procedure_name": (
-                hit.payload.get("thu_tuc") or hit.payload.get("procedure_name") or ""
-            ), "payload": hit.payload}
+            {"id": hit.id, "procedure_name": candidate_name(hit.payload),
+             "payload": hit.payload}
             for hit in search_store.search(
                 question,
                 domain_id,
@@ -492,12 +496,12 @@ def find_exact_local_procedures(question: str, domain_id: str = "legal_ai"):
 # =========================================================
 
 print(
-    "Loading BGE-M3 embedding model..." if SEARCH_BACKEND == "qdrant"
+    "Loading BGE-M3 embedding model..." if SEARCH_BACKEND in {"qdrant", "hybrid"}
     else "Skipping BGE-M3 embedding model for Elasticsearch BM25 retrieval...",
     flush=True,
 )
 _embedding_init_started = time.perf_counter()
-if SEARCH_BACKEND == "qdrant":
+if SEARCH_BACKEND in {"qdrant", "hybrid"}:
     try:
         embedding_model = SentenceTransformer(
             EMBEDDING_MODEL,
@@ -585,9 +589,11 @@ print(
 
 domain_document_service = DomainDocumentService(
     qdrant=qdrant_client,
-    embedder=embedding_model if SEARCH_BACKEND == "qdrant" else None,
+    embedder=embedding_model if SEARCH_BACKEND in {"qdrant", "hybrid"} else None,
     registry=registry_service,
-    search_store=search_store,
+    # Hybrid changes read-time retrieval only; retain the existing Qdrant
+    # upload contract rather than silently switching writes to another store.
+    search_store=search_store if SEARCH_BACKEND == "elasticsearch" else None,
 )
 
 
@@ -620,10 +626,18 @@ async def root():
 async def search_readiness():
     """Read-only probe for configured search and primary PostgreSQL storage."""
     def probe():
-        if SEARCH_BACKEND == "elasticsearch":
+        if SEARCH_BACKEND in {"elasticsearch", "hybrid"}:
             components = search_store.health()
             postgres_status = components["postgres"]
             retrieval_status = components["elasticsearch"]
+            if SEARCH_BACKEND == "hybrid":
+                try:
+                    qdrant_client.get_collections()
+                    components["qdrant"] = "available"
+                except Exception:
+                    components["qdrant"] = "unavailable"
+                if components["qdrant"] != "available":
+                    retrieval_status = "unavailable"
         else:
             try:
                 with catalog_engine.connect() as connection:
@@ -861,6 +875,7 @@ async def rerank_local_results(
     if not contexts:
         if stage_state is not None:
             stage_state["reranking"] = "not_started"
+            stage_state["candidates"] = []
         return []
 
     print(
@@ -914,6 +929,11 @@ async def rerank_local_results(
             apply_margin=apply_margin,
             margin_threshold=RERANK_MARGIN_THRESHOLD,
         )
+        if stage_state is not None:
+            stage_state["candidates"] = [
+                reranker_candidate_summary(candidate, RERANK_SCORE_THRESHOLD)
+                for candidate in decisions[:30]
+            ]
         filtered = []
         for candidate in decisions:
             print(
@@ -974,6 +994,7 @@ async def rerank_local_results(
 
         if stage_state is not None:
             stage_state["reranking"] = "failed"
+            stage_state["candidates"] = []
 
         # Nếu reranker lỗi thì không làm
         # toàn bộ Local RAG chết.
@@ -994,6 +1015,7 @@ async def search_local_rag(
     if catalog_evidences is None:
         catalog_evidences = []
     stage_durations_ms = {}
+    retrieval_diagnostics = {"configured_backend": SEARCH_BACKEND}
     retrieval_collection_status = "unknown"
     retrieval_started_at = time.perf_counter()
     print(
@@ -1022,7 +1044,7 @@ async def search_local_rag(
 
         embedding_started_at = time.perf_counter()
         query_vector = None
-        if semantic_search_enabled and SEARCH_BACKEND == "qdrant":
+        if semantic_search_enabled and SEARCH_BACKEND in {"qdrant", "hybrid"}:
             embedding_inference_started_at = time.perf_counter()
             query_vector = await asyncio.to_thread(
                 embedding_model.encode,
@@ -1102,7 +1124,59 @@ async def search_local_rag(
 
         retrieval_backend_started_at = time.perf_counter()
         results = []
-        if semantic_search_enabled and SEARCH_BACKEND == "elasticsearch":
+        if semantic_search_enabled and SEARCH_BACKEND == "hybrid":
+            from backend.search.hybrid import retrieve_hybrid
+
+            search_limit = (
+                min(MAX_STRUCTURED_LOCAL_RESULTS, retrieval_config.structured_candidate_limit)
+                if structured_query else retrieval_plan.local_candidate_limit
+            )
+
+            def vector_search():
+                hits = []
+                for collection_name in retrieval_collections:
+                    hits.extend(qdrant_client.query_points(
+                        collection_name=collection_name,
+                        query=query_vector.tolist(), limit=search_limit, with_payload=True,
+                        query_filter=(models.Filter(must=[models.FieldCondition(
+                            key="domain_id", match=models.MatchValue(value=domain_id),
+                        )]) if collection_name.startswith("domain_documents_") else None),
+                    ).points)
+                return sorted(hits, key=lambda hit: hit.score, reverse=True)[:search_limit]
+
+            results, hybrid_diagnostics = await retrieve_hybrid(
+                query=retrieval_question, domain_id=domain_id,
+                vector_search=vector_search,
+                keyword_search=lambda: search_store.search(
+                    retrieval_question, domain_id, limit=search_limit,
+                    min_score=ELASTICSEARCH_MIN_SCORE,
+                ),
+                limit=search_limit, vector_min_score=RAG_SCORE_THRESHOLD,
+            )
+            retrieval_diagnostics = {
+                "configured_backend": "hybrid",
+                "branches": hybrid_diagnostics,
+                "rrf": {
+                    "status": "completed",
+                    "fused_candidate_count": len(results),
+                    "cross_store_match_count": sum(
+                        len(hit.retrieval_provenance) > 1 for hit in results
+                    ),
+                },
+            }
+            for hit in results:
+                print("[HYBRID CANDIDATE]", "request_id=", request_id,
+                      "point_id=", hit.id, "rrf_score=", hit.score,
+                      "provenance=", hit.retrieval_provenance, flush=True)
+            for branch, diagnostic in hybrid_diagnostics.items():
+                stage_durations_ms[f"retrieval_{branch}"] = diagnostic["duration_ms"]
+                print("[HYBRID RETRIEVAL]", "request_id=", request_id,
+                      "domain_id=", domain_id, "backend=", branch, diagnostic, flush=True)
+            retrieval_collection_status = (
+                "partial" if any(d["status"] == "failed" for d in hybrid_diagnostics.values())
+                else "available"
+            )
+        elif semantic_search_enabled and SEARCH_BACKEND == "elasticsearch":
             search_limit = (
                 min(MAX_STRUCTURED_LOCAL_RESULTS, retrieval_config.structured_candidate_limit)
                 if structured_query
@@ -1184,6 +1258,7 @@ async def search_local_rag(
 
         contexts = []
         rejected_irrelevance_count = 0
+        candidate_diagnostics = []
 
         # -------------------------------------------------
         # LOCAL PROCEDURE EXACT LOOKUP
@@ -1246,6 +1321,9 @@ async def search_local_rag(
             )
 
             if not domain_upload_payload_matches(payload, domain_id):
+                candidate_diagnostics.append(retrieval_candidate_summary(
+                    result, "reject_domain_upload_metadata_mismatch"
+                ))
                 print(
                     "[RETRIEVAL FILTER]",
                     "request_id=", request_id,
@@ -1254,15 +1332,7 @@ async def search_local_rag(
                 )
                 continue
 
-            procedure_name = str(
-                payload.get(
-                    "thu_tuc",
-                    payload.get(
-                        "procedure_name",
-                        ""
-                    )
-                )
-            ).strip()
+            procedure_name = candidate_name(payload)
             source_type = str(payload.get("source_type", "") or "")
 
             text = str(
@@ -1272,17 +1342,24 @@ async def search_local_rag(
                 )
             ).strip()
 
-            score = float(
-                result.score
-                or 0
-            )
+            score = finite_retrieval_score(getattr(result, "score", None))
             candidate_id = str(getattr(result, "id", "unknown"))[:100]
             safe_payload_fields = sorted(
                 key for key in payload
                 if key in {"thu_tuc", "procedure_name", "domain", "category", "source_type"}
             )
 
+            if score is None:
+                candidate_diagnostics.append(retrieval_candidate_summary(result, "reject_invalid_score"))
+                print(
+                    "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
+                    "candidate_id=", candidate_id,
+                    "decision=reject_invalid_score",
+                )
+                continue
+
             if not text:
+                candidate_diagnostics.append(retrieval_candidate_summary(result, "reject_empty_text"))
                 print(
                     "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
                     "candidate_id=", candidate_id,
@@ -1303,6 +1380,7 @@ async def search_local_rag(
                     if item.get("score", 0) >= 0.99
                 }
                 if procedure_name not in exact_names:
+                    candidate_diagnostics.append(retrieval_candidate_summary(result, "reject_low_score"))
                     print(
                         "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
                         "candidate_id=", candidate_id,
@@ -1320,6 +1398,9 @@ async def search_local_rag(
             ):
                 rejected_irrelevance_count += 1
                 relevance = procedure_relevance(retrieval_question, procedure_name)
+                candidate_diagnostics.append(retrieval_candidate_summary(
+                    result, "reject_irrelevant", relevance=relevance,
+                ))
                 print(
                     "[RETRIEVAL CANDIDATE]", "request_id=", request_id,
                     "candidate_id=", candidate_id,
@@ -1340,10 +1421,12 @@ async def search_local_rag(
                 "decision=accepted",
                 "score=", round(score, 4),
             )
+            candidate_diagnostics.append(retrieval_candidate_summary(result, "accepted_for_rerank"))
 
             contexts.append(
                 {
                     "point_id": candidate_id,
+                    "retrieval_provenance": getattr(result, "retrieval_provenance", []),
                     "record_id": payload.get("record_id") or (
                         payload.get("record_fields", {}).get("record_id")
                         if isinstance(payload.get("record_fields"), dict)
@@ -1501,6 +1584,7 @@ async def search_local_rag(
                     )
                 )
 
+        rerank_state = {}
         if exact_candidates and should_use_exact_match_shortcut(
             question,
             structured_list_query=structured_list_query,
@@ -1530,7 +1614,6 @@ async def search_local_rag(
         else:
 
             # Không có exact match → dùng reranker như trước.
-            rerank_state = {}
             reranked_contexts = (
                 await rerank_local_results(
                     retrieval_question,
@@ -1645,7 +1728,9 @@ async def search_local_rag(
                 (
                     f"Điểm Elasticsearch BM25: {item['score']:.4f}"
                     if SEARCH_BACKEND == "elasticsearch"
-                    else f"Điểm BGE-M3: {item['score']:.4f}"
+                    else (f"Điểm Hybrid RRF (thứ hạng, không phải độ tin cậy): {item['score']:.4f}"
+                          if SEARCH_BACKEND == "hybrid"
+                          else f"Điểm BGE-M3: {item['score']:.4f}")
                 ),
                 f"Điểm Reranker: {item['rerank_score']:.4f}",
             ]
@@ -1693,6 +1778,17 @@ async def search_local_rag(
             len(contexts),
             rejected_irrelevance_count,
         )
+        if retrieval_diagnostics is not None:
+            retrieval_diagnostics.update({
+                "candidates": candidate_diagnostics[:30],
+                "candidate_diagnostics_truncated": len(candidate_diagnostics) > 30,
+                "reranker_candidates": rerank_state.get("candidates", []),
+                "accepted_candidate_count": len(contexts),
+                "local_exact_match_count": len(exact_local_items),
+                "exact_match_shortcut_used": exact_procedure is not None,
+                "reranked_candidate_count": reranked_count,
+                "built_evidence_count": evidence_count,
+            })
 
         return {
             "contexts": formatted_contexts,
@@ -1708,6 +1804,7 @@ async def search_local_rag(
             "reranked_count": reranked_count,
             "evidence_count": evidence_count,
             "retrieval_collection_status": retrieval_collection_status,
+            "retrieval_diagnostics": retrieval_diagnostics,
             "structured_retrieval": structured_status,
             "structured_candidate_count": len(structured_candidates),
             # Keep the old diagnostic keys for clients that still read them.
@@ -1723,6 +1820,12 @@ async def search_local_rag(
         }
 
     except Exception as e:
+        if getattr(e, "diagnostics", None) is not None:
+            retrieval_diagnostics = {
+                "configured_backend": "hybrid",
+                "branches": e.diagnostics,
+                "rrf": {"status": "not_run", "fused_candidate_count": 0},
+            }
         stage_durations_ms.setdefault(
             "local_retrieval",
             round((time.perf_counter() - retrieval_started_at) * 1000, 2),
@@ -1750,6 +1853,7 @@ async def search_local_rag(
         fallback["reranked_count"] = 0
         fallback["evidence_count"] = len(fallback["evidence_bundle"].evidences)
         fallback["retrieval_collection_status"] = retrieval_collection_status
+        fallback["retrieval_diagnostics"] = retrieval_diagnostics
         fallback["stage_status"] = {
             "retrieval": "failed",
             "reranking": "not_started",
@@ -2443,6 +2547,10 @@ async def chat_completions(
             pipeline_state["retrieval_collection_status"] = rag_result.get(
                 "retrieval_collection_status", "unknown"
             )
+            if rag_result.get("retrieval_diagnostics") is not None:
+                pipeline_state["retrieval_diagnostics"] = rag_result[
+                    "retrieval_diagnostics"
+                ]
             pipeline_state["structured_retrieval"] = rag_result.get(
                 "structured_retrieval", "not_required"
             )
@@ -2891,6 +2999,10 @@ async def chat_completions(
 
         try:
 
+            # One bounded budget covers the initial generation and any citation
+            # retry; otherwise two 180 s upstream calls could outlive the user.
+            generation_deadline = time.time() + 175.0
+
             async def call_model(model_prompt: str, citation_attempt: int) -> dict:
                 prompt_digest = hashlib.sha256(
                     model_prompt.encode("utf-8")
@@ -2915,6 +3027,7 @@ async def chat_completions(
                             citation_attempt=citation_attempt,
                             max_new_tokens=MODEL_MAX_NEW_TOKENS,
                             timeout_seconds=180.0,
+                            deadline=generation_deadline,
                         )
                 except Exception as exc:
                     elapsed_ms = round(
@@ -2996,6 +3109,7 @@ async def chat_completions(
                 generate=call_model,
                 verifier=timed_verifier,
                 max_attempts=2,
+                deadline=generation_deadline,
                 raw_answer_debug_enabled=_raw_citation_debug_enabled,
                 on_attempt=make_citation_attempt_logger(
                     request_id,
@@ -3044,6 +3158,18 @@ async def chat_completions(
             pipeline_state["model_processing_time_ms"] = (
                 outcome.model_processing_time_ms
             )
+            model_response = outcome.last_model_response
+            for response_key, diagnostic_key in (
+                ("input_tokens", "model_input_tokens"),
+                ("output_tokens", "model_output_tokens"),
+                ("prompt_preparation_ms", "model_prompt_preparation_ms"),
+            ):
+                value = model_response.get(response_key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    pipeline_state[diagnostic_key] = value
+            finish_reason = model_response.get("finish_reason")
+            if finish_reason in {"eos", "max_new_tokens", "empty", "other"}:
+                pipeline_state["model_finish_reason"] = finish_reason
             pipeline_state["citation_verification"] = (
                 "passed" if verification_result.citation_integrity_passed
                 else "failed" if generation_succeeded else "error"
@@ -3191,6 +3317,8 @@ async def chat_completions(
                     answer,
                     pipeline_state,
                     verification_status,
+                    domain_id=effective_domain,
+                    policy_mode=selected_domain_config.policy.mode,
                 )
             )
             answer_is_unverified_reference = (

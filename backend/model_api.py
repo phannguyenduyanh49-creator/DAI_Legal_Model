@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException
 import math
 from pydantic import BaseModel, Field
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, StoppingCriteriaList
 from peft import PeftModel
 import torch
 import uvicorn
@@ -11,6 +11,9 @@ import sys
 import os
 import atexit
 from backend.model_runtime import (
+    DeadlineStoppingCriteria,
+    generation_finish_reason,
+    monotonic_request_deadline,
     pytorch_cuda_memory_snapshot,
     pytorch_cuda_peak_snapshot,
 )
@@ -210,12 +213,16 @@ def root():
 def generate(
     request: GenerateRequest,
     request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    request_deadline: float | None = Header(default=None, alias="X-Request-Deadline"),
     citation_attempt: int | None = Header(
         default=None, alias="X-Citation-Attempt"
     ),
 ):
     started_at = time.perf_counter()
     prompt = request.prompt
+    deadline_monotonic = monotonic_request_deadline(request_deadline)
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        raise HTTPException(status_code=504, detail={"code": "MODEL_DEADLINE_EXPIRED"})
 
     if not prompt.strip():
         from fastapi import HTTPException
@@ -238,6 +245,7 @@ def generate(
         flush=True,
     )
 
+    prompt_preparation_started_at = time.perf_counter()
     messages = [
         {
             "role": "user",
@@ -269,6 +277,9 @@ def generate(
             },
         )
     inputs = inputs.to(model.device)
+    prompt_preparation_ms = round(
+        (time.perf_counter() - prompt_preparation_started_at) * 1000, 2
+    )
     formatted_prompt_sha256 = hashlib.sha256(
         formatted_prompt.encode("utf-8")
     ).hexdigest()
@@ -298,6 +309,10 @@ def generate(
         _cuda_before = {"allocated_bytes": None, "reserved_bytes": None}
 
     generation_started_at = time.perf_counter()
+    deadline_stop = (
+        DeadlineStoppingCriteria(deadline_monotonic)
+        if deadline_monotonic is not None else None
+    )
     try:
         with torch.no_grad():
             outputs = model.generate(
@@ -305,13 +320,22 @@ def generate(
                 max_new_tokens=request.max_new_tokens,
                 do_sample=False,
                 repetition_penalty=1.1,
-                pad_token_id=tokenizer.eos_token_id
+                pad_token_id=tokenizer.eos_token_id,
+                **({"stopping_criteria": StoppingCriteriaList([deadline_stop])} if deadline_stop else {}),
             )
         if _qwen_uses_cuda and torch.cuda.is_available():
             torch.cuda.synchronize()
         generation_duration_ms = round(
             (time.perf_counter() - generation_started_at) * 1000, 2
         )
+        if deadline_stop is not None and deadline_stop.expired:
+            print(
+                "[MODEL API] generation deadline expired:",
+                f"request_id={request_id or 'not_provided'}",
+                f"generation_duration_ms={generation_duration_ms}",
+                flush=True,
+            )
+            raise HTTPException(status_code=504, detail={"code": "MODEL_DEADLINE_EXPIRED"})
     except Exception as exc:
         if _qwen_uses_cuda and torch.cuda.is_available():
             try:
@@ -349,6 +373,12 @@ def generate(
     )
 
     output_token_count = int(generated_tokens.shape[0])
+    finish_reason = generation_finish_reason(
+        int(generated_tokens[-1].item()) if output_token_count else None,
+        output_token_count,
+        request.max_new_tokens,
+        getattr(model.generation_config, "eos_token_id", tokenizer.eos_token_id),
+    )
     tokens_per_second = (
         round(output_token_count / (generation_duration_ms / 1000), 3)
         if generation_duration_ms > 0
@@ -371,6 +401,8 @@ def generate(
         f"citation_attempt={citation_attempt or 'not_provided'}",
         f"input_tokens={input_token_count}",
         f"output_tokens={output_token_count}",
+        f"finish_reason={finish_reason}",
+        f"prompt_preparation_ms={prompt_preparation_ms}",
         f"generation_duration_ms={generation_duration_ms}",
         f"tokens_per_second={tokens_per_second}",
         "ttft_ms=not_measured",
@@ -391,6 +423,8 @@ def generate(
         "processing_time_ms": processing_time_ms,
         "input_tokens": input_token_count,
         "output_tokens": output_token_count,
+        "finish_reason": finish_reason,
+        "prompt_preparation_ms": prompt_preparation_ms,
         "prompt_chars": len(prompt),
         "evidence_section_detected": has_evidence_section,
     }

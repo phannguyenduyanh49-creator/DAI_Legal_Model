@@ -9,15 +9,20 @@ async def post_model_generation(
     citation_attempt: int,
     max_new_tokens: int = 256,
     timeout_seconds: float = 180.0,
+    deadline: float | None = None,
 ) -> httpx.Response:
     """Send the assembled prompt unchanged using the Model API contract."""
+    headers = {
+        "X-Request-ID": request_id,
+        "X-Citation-Attempt": str(citation_attempt),
+        "X-Timeout-Seconds": str(round(timeout_seconds, 2)),
+    }
+    if deadline is not None:
+        headers["X-Request-Deadline"] = str(round(deadline, 4))
     response = await client.post(
         url,
         json={"prompt": prompt, "max_new_tokens": max_new_tokens},
-        headers={
-            "X-Request-ID": request_id,
-            "X-Citation-Attempt": str(citation_attempt),
-        },
+        headers=headers,
         timeout=timeout_seconds,
     )
     response.raise_for_status()
