@@ -1,0 +1,8 @@
+﻿metric,label,unit,sample_count,synthetic_mean,synthetic_min,synthetic_max,synthetic_p95,status
+embedding_generation,Embedding generation,ms,20,33.65,19.586,53.837,53.837,SYNTHETIC_DEMO_NOT_MEASURED
+vector_search,Qdrant vector search,ms,20,22.778,11.584,34.394,34.394,SYNTHETIC_DEMO_NOT_MEASURED
+reranking,BGE reranking,ms,20,56.012,26.972,86.475,86.475,SYNTHETIC_DEMO_NOT_MEASURED
+llm_first_token,LLM time to first token,ms,20,967.856,458.255,1554.325,1554.325,SYNTHETIC_DEMO_NOT_MEASURED
+llm_generation,LLM generation (short response),s,20,5.228,2.409,7.973,7.973,SYNTHETIC_DEMO_NOT_MEASURED
+mcp_lookup,MCP/DVC lookup,s,20,2.243,0.632,3.421,3.421,SYNTHETIC_DEMO_NOT_MEASURED
+api_end_to_end,End-to-end API response,s,20,7.484,3.206,11.709,11.709,SYNTHETIC_DEMO_NOT_MEASURED

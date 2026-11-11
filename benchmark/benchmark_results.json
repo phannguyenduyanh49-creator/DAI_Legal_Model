@@ -1,0 +1,107 @@
+{
+  "project": "Digital AI Intelligence (DAI) - DAI Legal Model",
+  "generated_at_utc": "2026-11-11T08:21:48.591615+00:00",
+  "data_classification": "SYNTHETIC_DEMO_NOT_MEASURED",
+  "notice": "Synthetic illustrative values only. No DAI services or hardware were benchmarked.",
+  "system_configuration_reference": {
+    "project": "Digital AI Intelligence (DAI) - DAI Legal Model",
+    "cpu": "Intel Core i5-14600KF",
+    "gpu": "NVIDIA GeForce RTX 4070 12GB",
+    "ram": "32GB DDR4",
+    "llm": "Qwen 2.5-7B Instruct",
+    "embedding": "BGE-M3",
+    "reranker": "BGE Reranker",
+    "vector_database": "Qdrant",
+    "backend": "FastAPI"
+  },
+  "method": {
+    "samples_per_metric": 20,
+    "random_seed": 20261111,
+    "mode": "simulation",
+    "limitations": [
+      "No connection to Qdrant, FastAPI, Model API, MCP, or DVC.",
+      "No CPU, GPU VRAM, or RAM telemetry was collected.",
+      "No model tokens-per-second measurement was performed.",
+      "Values must not be presented as actual system performance."
+    ]
+  },
+  "results": [
+    {
+      "metric": "embedding_generation",
+      "label": "Embedding generation",
+      "unit": "ms",
+      "sample_count": 20,
+      "synthetic_mean": 33.65,
+      "synthetic_min": 19.586,
+      "synthetic_max": 53.837,
+      "synthetic_p95": 53.837,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    },
+    {
+      "metric": "vector_search",
+      "label": "Qdrant vector search",
+      "unit": "ms",
+      "sample_count": 20,
+      "synthetic_mean": 22.778,
+      "synthetic_min": 11.584,
+      "synthetic_max": 34.394,
+      "synthetic_p95": 34.394,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    },
+    {
+      "metric": "reranking",
+      "label": "BGE reranking",
+      "unit": "ms",
+      "sample_count": 20,
+      "synthetic_mean": 56.012,
+      "synthetic_min": 26.972,
+      "synthetic_max": 86.475,
+      "synthetic_p95": 86.475,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    },
+    {
+      "metric": "llm_first_token",
+      "label": "LLM time to first token",
+      "unit": "ms",
+      "sample_count": 20,
+      "synthetic_mean": 967.856,
+      "synthetic_min": 458.255,
+      "synthetic_max": 1554.325,
+      "synthetic_p95": 1554.325,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    },
+    {
+      "metric": "llm_generation",
+      "label": "LLM generation (short response)",
+      "unit": "s",
+      "sample_count": 20,
+      "synthetic_mean": 5.228,
+      "synthetic_min": 2.409,
+      "synthetic_max": 7.973,
+      "synthetic_p95": 7.973,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    },
+    {
+      "metric": "mcp_lookup",
+      "label": "MCP/DVC lookup",
+      "unit": "s",
+      "sample_count": 20,
+      "synthetic_mean": 2.243,
+      "synthetic_min": 0.632,
+      "synthetic_max": 3.421,
+      "synthetic_p95": 3.421,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    },
+    {
+      "metric": "api_end_to_end",
+      "label": "End-to-end API response",
+      "unit": "s",
+      "sample_count": 20,
+      "synthetic_mean": 7.484,
+      "synthetic_min": 3.206,
+      "synthetic_max": 11.709,
+      "synthetic_p95": 11.709,
+      "status": "SYNTHETIC_DEMO_NOT_MEASURED"
+    }
+  ]
+}
