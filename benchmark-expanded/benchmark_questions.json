@@ -1,0 +1,602 @@
+[
+  {
+    "id": "DAI-001",
+    "category": "administrative",
+    "topic": "Đăng ký doanh nghiệp",
+    "question": "Người thành lập công ty trách nhiệm hữu hạn một thành viên cần chuẩn bị hồ sơ và thông tin gì?"
+  },
+  {
+    "id": "DAI-002",
+    "category": "administrative",
+    "topic": "Thay đổi trụ sở",
+    "question": "Khi thay đổi địa chỉ trụ sở chính, doanh nghiệp cần thực hiện thủ tục nào?"
+  },
+  {
+    "id": "DAI-003",
+    "category": "administrative",
+    "topic": "Tạm ngừng kinh doanh",
+    "question": "Doanh nghiệp cần thông báo tạm ngừng kinh doanh cho cơ quan nào và khi nào?"
+  },
+  {
+    "id": "DAI-004",
+    "category": "administrative",
+    "topic": "Giải thể",
+    "question": "Doanh nghiệp cần hoàn thành những nghĩa vụ nào trước khi giải thể?"
+  },
+  {
+    "id": "DAI-005",
+    "category": "administrative",
+    "topic": "Hộ kinh doanh",
+    "question": "Cá nhân đăng ký hộ kinh doanh cần chuẩn bị hồ sơ gì?"
+  },
+  {
+    "id": "DAI-006",
+    "category": "administrative",
+    "topic": "Thành lập chi nhánh",
+    "question": "Doanh nghiệp thành lập chi nhánh khác tỉnh cần thực hiện thủ tục gì?"
+  },
+  {
+    "id": "DAI-007",
+    "category": "administrative",
+    "topic": "Thay đổi vốn",
+    "question": "Thủ tục đăng ký tăng vốn điều lệ gồm những bước nào?"
+  },
+  {
+    "id": "DAI-008",
+    "category": "administrative",
+    "topic": "Người đại diện",
+    "question": "Hồ sơ thay đổi người đại diện theo pháp luật gồm những gì?"
+  },
+  {
+    "id": "DAI-009",
+    "category": "administrative",
+    "topic": "Địa điểm kinh doanh",
+    "question": "Địa điểm kinh doanh khác trụ sở chính cần đăng ký như thế nào?"
+  },
+  {
+    "id": "DAI-010",
+    "category": "administrative",
+    "topic": "Chuyển đổi loại hình",
+    "question": "Công ty TNHH chuyển thành công ty cổ phần cần lưu ý thủ tục gì?"
+  },
+  {
+    "id": "DAI-011",
+    "category": "administrative",
+    "topic": "Đăng ký trực tuyến",
+    "question": "Có thể nộp hồ sơ đăng ký doanh nghiệp trực tuyến không?"
+  },
+  {
+    "id": "DAI-012",
+    "category": "administrative",
+    "topic": "Công bố đăng ký",
+    "question": "Sau khi thành lập doanh nghiệp cần công bố thông tin gì?"
+  },
+  {
+    "id": "DAI-013",
+    "category": "administrative",
+    "topic": "Mất giấy chứng nhận",
+    "question": "Khi mất giấy chứng nhận đăng ký doanh nghiệp cần xử lý thế nào?"
+  },
+  {
+    "id": "DAI-014",
+    "category": "administrative",
+    "topic": "Thay đổi ngành nghề",
+    "question": "Doanh nghiệp bổ sung ngành nghề kinh doanh cần thực hiện thủ tục gì?"
+  },
+  {
+    "id": "DAI-015",
+    "category": "administrative",
+    "topic": "Con dấu",
+    "question": "Doanh nghiệp cần lưu ý gì khi quản lý và sử dụng con dấu?"
+  },
+  {
+    "id": "DAI-016",
+    "category": "labor",
+    "topic": "Hợp đồng lao động",
+    "question": "Hợp đồng lao động cần có những nội dung chủ yếu nào?"
+  },
+  {
+    "id": "DAI-017",
+    "category": "labor",
+    "topic": "Thử việc",
+    "question": "Thời gian thử việc tối đa được xác định như thế nào?"
+  },
+  {
+    "id": "DAI-018",
+    "category": "labor",
+    "topic": "Đơn phương chấm dứt",
+    "question": "Người lao động đơn phương chấm dứt hợp đồng cần báo trước ra sao?"
+  },
+  {
+    "id": "DAI-019",
+    "category": "labor",
+    "topic": "Sa thải",
+    "question": "Những trường hợp nào có thể áp dụng hình thức kỷ luật sa thải?"
+  },
+  {
+    "id": "DAI-020",
+    "category": "labor",
+    "topic": "Làm thêm giờ",
+    "question": "Tiền lương làm thêm giờ được tính theo nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-021",
+    "category": "labor",
+    "topic": "Nghỉ phép năm",
+    "question": "Người lao động được hưởng ngày nghỉ hằng năm như thế nào?"
+  },
+  {
+    "id": "DAI-022",
+    "category": "labor",
+    "topic": "Nghỉ lễ",
+    "question": "Làm việc vào ngày nghỉ lễ được trả lương ra sao?"
+  },
+  {
+    "id": "DAI-023",
+    "category": "labor",
+    "topic": "BHXH bắt buộc",
+    "question": "Những đối tượng nào thuộc diện tham gia bảo hiểm xã hội bắt buộc?"
+  },
+  {
+    "id": "DAI-024",
+    "category": "labor",
+    "topic": "Tai nạn lao động",
+    "question": "Người sử dụng lao động có trách nhiệm gì khi xảy ra tai nạn lao động?"
+  },
+  {
+    "id": "DAI-025",
+    "category": "labor",
+    "topic": "Kỷ luật lao động",
+    "question": "Trình tự xử lý kỷ luật lao động cần tuân thủ nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-026",
+    "category": "labor",
+    "topic": "Chuyển công việc",
+    "question": "Khi nào người sử dụng lao động được tạm thời chuyển người lao động làm việc khác?"
+  },
+  {
+    "id": "DAI-027",
+    "category": "labor",
+    "topic": "Thời giờ làm việc",
+    "question": "Thời giờ làm việc bình thường được giới hạn như thế nào?"
+  },
+  {
+    "id": "DAI-028",
+    "category": "labor",
+    "topic": "Thỏa ước tập thể",
+    "question": "Thỏa ước lao động tập thể có hiệu lực khi đáp ứng điều kiện nào?"
+  },
+  {
+    "id": "DAI-029",
+    "category": "labor",
+    "topic": "Trợ cấp thôi việc",
+    "question": "Khi chấm dứt hợp đồng, người lao động có thể được nhận trợ cấp nào?"
+  },
+  {
+    "id": "DAI-030",
+    "category": "labor",
+    "topic": "Lao động chưa thành niên",
+    "question": "Doanh nghiệp cần tuân thủ giới hạn nào khi sử dụng lao động chưa thành niên?"
+  },
+  {
+    "id": "DAI-031",
+    "category": "civil",
+    "topic": "Hiệu lực hợp đồng",
+    "question": "Hợp đồng dân sự có hiệu lực khi đáp ứng điều kiện nào?"
+  },
+  {
+    "id": "DAI-032",
+    "category": "civil",
+    "topic": "Giao dịch vô hiệu",
+    "question": "Những trường hợp nào có thể khiến giao dịch dân sự vô hiệu?"
+  },
+  {
+    "id": "DAI-033",
+    "category": "civil",
+    "topic": "Bồi thường thiệt hại",
+    "question": "Trách nhiệm bồi thường thiệt hại ngoài hợp đồng cần xác định yếu tố nào?"
+  },
+  {
+    "id": "DAI-034",
+    "category": "civil",
+    "topic": "Đặt cọc",
+    "question": "Phân biệt đặt cọc và trả trước trong giao dịch dân sự."
+  },
+  {
+    "id": "DAI-035",
+    "category": "civil",
+    "topic": "Ủy quyền",
+    "question": "Hợp đồng ủy quyền cần thể hiện những nội dung quan trọng nào?"
+  },
+  {
+    "id": "DAI-036",
+    "category": "civil",
+    "topic": "Di chúc",
+    "question": "Di chúc hợp pháp cần đáp ứng những điều kiện nào?"
+  },
+  {
+    "id": "DAI-037",
+    "category": "civil",
+    "topic": "Hàng thừa kế",
+    "question": "Thứ tự hàng thừa kế được xác định theo nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-038",
+    "category": "civil",
+    "topic": "Tài sản vợ chồng",
+    "question": "Nguyên tắc xác định tài sản chung và riêng của vợ chồng là gì?"
+  },
+  {
+    "id": "DAI-039",
+    "category": "civil",
+    "topic": "Quyền sở hữu",
+    "question": "Quyền sở hữu tài sản bao gồm những quyền năng nào?"
+  },
+  {
+    "id": "DAI-040",
+    "category": "civil",
+    "topic": "Thời hiệu",
+    "question": "Thời hiệu khởi kiện tranh chấp dân sự được xác định ra sao?"
+  },
+  {
+    "id": "DAI-041",
+    "category": "civil",
+    "topic": "Nghĩa vụ trả nợ",
+    "question": "Khi bên vay không trả nợ đúng hạn, bên cho vay có thể yêu cầu gì?"
+  },
+  {
+    "id": "DAI-042",
+    "category": "civil",
+    "topic": "Thuê nhà",
+    "question": "Hợp đồng thuê nhà nên có những điều khoản nào để hạn chế tranh chấp?"
+  },
+  {
+    "id": "DAI-043",
+    "category": "civil",
+    "topic": "Người thứ ba ngay tình",
+    "question": "Giao dịch vô hiệu ảnh hưởng đến người thứ ba ngay tình như thế nào?"
+  },
+  {
+    "id": "DAI-044",
+    "category": "civil",
+    "topic": "Đại diện",
+    "question": "Hậu quả pháp lý khi người đại diện vượt quá phạm vi đại diện là gì?"
+  },
+  {
+    "id": "DAI-045",
+    "category": "civil",
+    "topic": "Phạt vi phạm",
+    "question": "Phân biệt phạt vi phạm và bồi thường thiệt hại trong hợp đồng."
+  },
+  {
+    "id": "DAI-046",
+    "category": "criminal",
+    "topic": "Cấu thành tội phạm",
+    "question": "Cấu thành tội phạm thường được phân tích qua những yếu tố nào?"
+  },
+  {
+    "id": "DAI-047",
+    "category": "criminal",
+    "topic": "Đồng phạm",
+    "question": "Đồng phạm là gì và có những vai trò nào?"
+  },
+  {
+    "id": "DAI-048",
+    "category": "criminal",
+    "topic": "Giảm nhẹ",
+    "question": "Tình tiết giảm nhẹ ảnh hưởng đến quyết định hình phạt ra sao?"
+  },
+  {
+    "id": "DAI-049",
+    "category": "criminal",
+    "topic": "Tự thú và đầu thú",
+    "question": "Phân biệt tự thú và đầu thú về ý nghĩa pháp lý."
+  },
+  {
+    "id": "DAI-050",
+    "category": "criminal",
+    "topic": "Phòng vệ chính đáng",
+    "question": "Khi nào hành vi được xem là phòng vệ chính đáng?"
+  },
+  {
+    "id": "DAI-051",
+    "category": "criminal",
+    "topic": "Tình thế cấp thiết",
+    "question": "Tình thế cấp thiết được xác định dựa trên điều kiện nào?"
+  },
+  {
+    "id": "DAI-052",
+    "category": "criminal",
+    "topic": "Người chưa thành niên",
+    "question": "Khi xử lý người chưa thành niên phạm tội cần tuân thủ nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-053",
+    "category": "criminal",
+    "topic": "Thời hiệu truy cứu",
+    "question": "Thời hiệu truy cứu trách nhiệm hình sự được phân loại thế nào?"
+  },
+  {
+    "id": "DAI-054",
+    "category": "criminal",
+    "topic": "Hình phạt bổ sung",
+    "question": "Hình phạt bổ sung được áp dụng trong trường hợp nào?"
+  },
+  {
+    "id": "DAI-055",
+    "category": "criminal",
+    "topic": "Án treo",
+    "question": "Án treo là gì và cần đáp ứng điều kiện cơ bản nào?"
+  },
+  {
+    "id": "DAI-056",
+    "category": "tax",
+    "topic": "Thuế GTGT",
+    "question": "Doanh nghiệp xác định thuế giá trị gia tăng đầu ra và đầu vào thế nào?"
+  },
+  {
+    "id": "DAI-057",
+    "category": "tax",
+    "topic": "Thuế TNDN",
+    "question": "Khoản chi nào cần đáp ứng điều kiện để được tính vào chi phí được trừ?"
+  },
+  {
+    "id": "DAI-058",
+    "category": "tax",
+    "topic": "Thuế TNCN",
+    "question": "Thu nhập tiền lương được tính thuế thu nhập cá nhân theo nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-059",
+    "category": "tax",
+    "topic": "Hóa đơn điện tử",
+    "question": "Doanh nghiệp cần lưu ý nghĩa vụ nào khi sử dụng hóa đơn điện tử?"
+  },
+  {
+    "id": "DAI-060",
+    "category": "tax",
+    "topic": "Kê khai thuế",
+    "question": "Doanh nghiệp xác định kỳ kê khai thuế theo tiêu chí nào?"
+  },
+  {
+    "id": "DAI-061",
+    "category": "tax",
+    "topic": "Chậm nộp thuế",
+    "question": "Chậm nộp tiền thuế có thể phát sinh hậu quả tài chính nào?"
+  },
+  {
+    "id": "DAI-062",
+    "category": "tax",
+    "topic": "Hoàn thuế",
+    "question": "Người nộp thuế cần đáp ứng điều kiện gì để được hoàn thuế?"
+  },
+  {
+    "id": "DAI-063",
+    "category": "tax",
+    "topic": "Quyết toán thuế",
+    "question": "Quyết toán thuế cuối năm cần chuẩn bị những nhóm hồ sơ nào?"
+  },
+  {
+    "id": "DAI-064",
+    "category": "tax",
+    "topic": "Ưu đãi thuế",
+    "question": "Doanh nghiệp cần kiểm tra điều kiện nào khi áp dụng ưu đãi thuế?"
+  },
+  {
+    "id": "DAI-065",
+    "category": "tax",
+    "topic": "Xử phạt thuế",
+    "question": "Yếu tố nào được xem xét khi xử lý vi phạm hành chính về thuế?"
+  },
+  {
+    "id": "DAI-066",
+    "category": "land",
+    "topic": "Cấp giấy chứng nhận",
+    "question": "Hồ sơ cấp giấy chứng nhận quyền sử dụng đất lần đầu gồm giấy tờ gì?"
+  },
+  {
+    "id": "DAI-067",
+    "category": "land",
+    "topic": "Chuyển nhượng đất",
+    "question": "Điều kiện cơ bản để chuyển nhượng quyền sử dụng đất là gì?"
+  },
+  {
+    "id": "DAI-068",
+    "category": "land",
+    "topic": "Tách thửa",
+    "question": "Điều kiện tách thửa đất được xác định theo căn cứ nào?"
+  },
+  {
+    "id": "DAI-069",
+    "category": "land",
+    "topic": "Biến động đất đai",
+    "question": "Những trường hợp nào cần đăng ký biến động đất đai?"
+  },
+  {
+    "id": "DAI-070",
+    "category": "land",
+    "topic": "Thừa kế đất",
+    "question": "Sang tên quyền sử dụng đất do thừa kế gồm những bước nào?"
+  },
+  {
+    "id": "DAI-071",
+    "category": "land",
+    "topic": "Thu hồi đất",
+    "question": "Bồi thường và hỗ trợ khi Nhà nước thu hồi đất dựa trên nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-072",
+    "category": "land",
+    "topic": "Mua bán nhà",
+    "question": "Hợp đồng mua bán nhà cần đáp ứng điều kiện về chủ thể và hình thức nào?"
+  },
+  {
+    "id": "DAI-073",
+    "category": "land",
+    "topic": "Người nước ngoài sở hữu nhà",
+    "question": "Cá nhân nước ngoài được sở hữu nhà ở tại Việt Nam theo điều kiện nào?"
+  },
+  {
+    "id": "DAI-074",
+    "category": "land",
+    "topic": "Tranh chấp ranh giới",
+    "question": "Khi tranh chấp ranh giới đất, các bên có thể thực hiện bước nào?"
+  },
+  {
+    "id": "DAI-075",
+    "category": "land",
+    "topic": "Cho thuê nhà",
+    "question": "Chủ nhà và người thuê nên thỏa thuận điều khoản nào trong hợp đồng?"
+  },
+  {
+    "id": "DAI-076",
+    "category": "ip",
+    "topic": "Quyền tác giả",
+    "question": "Quyền tác giả phát sinh khi nào và bảo hộ đối tượng nào?"
+  },
+  {
+    "id": "DAI-077",
+    "category": "ip",
+    "topic": "Đăng ký nhãn hiệu",
+    "question": "Hồ sơ đăng ký nhãn hiệu thường cần những tài liệu nào?"
+  },
+  {
+    "id": "DAI-078",
+    "category": "ip",
+    "topic": "Xâm phạm nhãn hiệu",
+    "question": "Hành vi nào có thể bị xem xét là xâm phạm quyền nhãn hiệu?"
+  },
+  {
+    "id": "DAI-079",
+    "category": "ip",
+    "topic": "Bản quyền phần mềm",
+    "question": "Sử dụng mã nguồn phần mềm bên khác cần lưu ý giấy phép nào?"
+  },
+  {
+    "id": "DAI-080",
+    "category": "ip",
+    "topic": "Chuyển nhượng quyền",
+    "question": "Hợp đồng chuyển nhượng quyền sở hữu trí tuệ cần làm rõ nội dung nào?"
+  },
+  {
+    "id": "DAI-081",
+    "category": "commercial",
+    "topic": "Phạt hợp đồng",
+    "question": "Mức phạt vi phạm trong hợp đồng thương mại được xác định thế nào?"
+  },
+  {
+    "id": "DAI-082",
+    "category": "commercial",
+    "topic": "Bất khả kháng",
+    "question": "Sự kiện bất khả kháng ảnh hưởng đến trách nhiệm hợp đồng ra sao?"
+  },
+  {
+    "id": "DAI-083",
+    "category": "commercial",
+    "topic": "Trọng tài thương mại",
+    "question": "Điều kiện để tranh chấp được giải quyết bằng trọng tài là gì?"
+  },
+  {
+    "id": "DAI-084",
+    "category": "commercial",
+    "topic": "Hòa giải thương mại",
+    "question": "Hòa giải thương mại có ưu điểm và giới hạn nào so với tòa án?"
+  },
+  {
+    "id": "DAI-085",
+    "category": "commercial",
+    "topic": "Đại lý thương mại",
+    "question": "Hợp đồng đại lý cần quy định quyền và nghĩa vụ nào?"
+  },
+  {
+    "id": "DAI-086",
+    "category": "administrative_law",
+    "topic": "Khiếu nại",
+    "question": "Cá nhân khiếu nại quyết định hành chính theo trình tự nào?"
+  },
+  {
+    "id": "DAI-087",
+    "category": "administrative_law",
+    "topic": "Tố cáo",
+    "question": "Phân biệt khiếu nại và tố cáo về mục đích và chủ thể."
+  },
+  {
+    "id": "DAI-088",
+    "category": "administrative_law",
+    "topic": "Quyết định xử phạt",
+    "question": "Quyết định xử phạt vi phạm hành chính cần có nội dung nào?"
+  },
+  {
+    "id": "DAI-089",
+    "category": "administrative_law",
+    "topic": "Thời hiệu xử phạt",
+    "question": "Thời hiệu xử phạt vi phạm hành chính được xác định ra sao?"
+  },
+  {
+    "id": "DAI-090",
+    "category": "administrative_law",
+    "topic": "Thi hành quyết định",
+    "question": "Người bị xử phạt cần làm gì sau khi quyết định có hiệu lực?"
+  },
+  {
+    "id": "DAI-091",
+    "category": "retrieval",
+    "topic": "Hiệu lực văn bản",
+    "question": "Làm thế nào xác định văn bản pháp luật còn hiệu lực hay hết hiệu lực?"
+  },
+  {
+    "id": "DAI-092",
+    "category": "retrieval",
+    "topic": "Văn bản sửa đổi",
+    "question": "Khi điều luật bị sửa đổi, cần đối chiếu văn bản gốc thế nào?"
+  },
+  {
+    "id": "DAI-093",
+    "category": "retrieval",
+    "topic": "Thứ bậc văn bản",
+    "question": "Khi hai văn bản khác nhau, cần xác định văn bản áp dụng theo nguyên tắc nào?"
+  },
+  {
+    "id": "DAI-094",
+    "category": "retrieval",
+    "topic": "Trích dẫn điều luật",
+    "question": "Câu trả lời pháp lý nên trích dẫn văn bản, điều, khoản và điểm thế nào?"
+  },
+  {
+    "id": "DAI-095",
+    "category": "retrieval",
+    "topic": "Thiếu căn cứ",
+    "question": "Nếu không tìm thấy căn cứ pháp lý trực tiếp, hệ thống nên phản hồi ra sao?"
+  },
+  {
+    "id": "DAI-096",
+    "category": "rag_quality",
+    "topic": "Câu hỏi nhiều ý",
+    "question": "Doanh nghiệp đổi tên và đổi trụ sở cùng lúc cần kiểm tra thủ tục nào?"
+  },
+  {
+    "id": "DAI-097",
+    "category": "rag_quality",
+    "topic": "Câu hỏi mơ hồ",
+    "question": "Tôi muốn làm giấy phép kinh doanh; hệ thống cần hỏi thêm thông tin gì?"
+  },
+  {
+    "id": "DAI-098",
+    "category": "rag_quality",
+    "topic": "Quy định mới",
+    "question": "Khi trả lời về quy định mới, hệ thống cần xác minh hiệu lực tại thời điểm nào?"
+  },
+  {
+    "id": "DAI-099",
+    "category": "rag_quality",
+    "topic": "Ngoài phạm vi",
+    "question": "Nếu câu hỏi ngoài phạm vi cơ sở dữ liệu, hệ thống nên xử lý ra sao?"
+  },
+  {
+    "id": "DAI-100",
+    "category": "rag_quality",
+    "topic": "Yêu cầu nguồn",
+    "question": "Hệ thống nên trình bày căn cứ pháp lý và nguồn tham khảo như thế nào?"
+  }
+]
